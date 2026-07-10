@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/bvanhorn/exfil/internal/fsys"
+	"github.com/bvanhorn/exfil/internal/transfer"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -53,10 +54,11 @@ type Model struct {
 	statusMsg   string
 	nextID      int
 	eventsCh    chan tea.Msg
+	jobsCh      chan transfer.Job
 	logger      *log.Logger
 }
 
-func NewModel(eventsCh chan tea.Msg, logger *log.Logger) *Model {
+func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logger) *Model {
 	if logger == nil {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
@@ -69,6 +71,7 @@ func NewModel(eventsCh chan tea.Msg, logger *log.Logger) *Model {
 		screen:    ScreenBrowsing,
 		theme:     theme,
 		eventsCh:  eventsCh,
+		jobsCh:    jobsCh,
 		logger:    logger,
 		localPane: NewBrowserPane("local", localFS, theme),
 		remotePane: NewBrowserPane("remote", fsys.LocalFS{}, theme),
@@ -153,6 +156,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.remotePane.ToggleSelect()
 			}
+		case "c":
+			return m, m.enqueueCopy()
 		}
 
 	case readDirMsg:
@@ -165,15 +170,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remotePane.Entries = msg.entries
 		}
 
-	case transferProgressMsg:
+	case transfer.TransferProgressMsg:
 		m.queuePane.UpdateTransfer(msg.ID, StatusRunning, msg.Done, msg.Total, msg.Speed, "")
 		return m, waitForEvent(m.eventsCh)
 
-	case transferDoneMsg:
+	case transfer.TransferDoneMsg:
 		m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
+		if m.localPane.Focus {
+			m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
+		}
 		return m, waitForEvent(m.eventsCh)
 
-	case transferErrorMsg:
+	case transfer.TransferErrorMsg:
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
 		return m, waitForEvent(m.eventsCh)
 	}
@@ -205,6 +213,70 @@ func (m *Model) View() string {
 	footer := lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
 
 	return footer
+}
+
+func (m *Model) enqueueCopy() tea.Cmd {
+	return func() tea.Msg {
+		var srcPane, dstPane *BrowserPane
+		if m.localPane.Focus {
+			srcPane = m.localPane
+			dstPane = m.remotePane
+		} else {
+			srcPane = m.remotePane
+			dstPane = m.localPane
+		}
+
+		files := srcPane.GetSelectedFiles()
+		if len(files) == 0 {
+			if entry := srcPane.CurrentFile(); entry != nil {
+				files = []string{entry.Name}
+			}
+		}
+
+		if len(files) == 0 {
+			m.statusMsg = "No files selected"
+			return nil
+		}
+
+		for _, filename := range files {
+			entry := &fsys.Entry{}
+			for _, e := range srcPane.Entries {
+				if e.Name == filename {
+					entry = &e
+					break
+				}
+			}
+
+			if entry.IsDir {
+				m.statusMsg = "Directories not supported"
+				continue
+			}
+
+			id := m.nextID
+			m.nextID++
+
+			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
+			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)
+
+			m.queuePane.AddTransfer(Transfer{
+				ID:       id,
+				Filename: filename,
+				Status:   StatusQueued,
+				Total:    entry.Size,
+			})
+
+			job := transfer.Job{
+				ID:         id,
+				SourcePath: srcPath,
+				DestPath:   dstPath,
+				Filename:   filename,
+			}
+
+			m.jobsCh <- job
+		}
+
+		return nil
+	}
 }
 
 func waitForEvent(ch chan tea.Msg) tea.Cmd {

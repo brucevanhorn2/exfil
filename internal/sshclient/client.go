@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"fmt"
 	"io/ioutil"
 	"net"
 	"os"
@@ -42,12 +43,7 @@ func Dial(h config.Host) (*ssh.Client, *sftp.Client, error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	addr := h.Hostname + ":" + string(rune('0'+h.Port/10)) + string(rune('0'+h.Port%10))
-	if h.Port == 22 {
-		addr = h.Hostname + ":22"
-	} else {
-		addr = h.Hostname + ":" + string(rune('0'+(h.Port/10))) + string(rune('0'+(h.Port%10)))
-	}
+	addr := net.JoinHostPort(h.Hostname, fmt.Sprintf("%d", h.Port))
 
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {

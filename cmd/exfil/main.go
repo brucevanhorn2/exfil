@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/bvanhorn/exfil/internal/transfer"
 	"github.com/bvanhorn/exfil/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -18,7 +19,11 @@ func main() {
 	logger := log.New(f, "", log.LstdFlags)
 
 	eventsCh := make(chan tea.Msg, 64)
-	model := ui.NewModel(eventsCh, logger)
+	jobsCh := make(chan transfer.Job, 256)
+
+	transfer.StartWorkers(3, jobsCh, eventsCh)
+
+	model := ui.NewModel(eventsCh, jobsCh, logger)
 
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
