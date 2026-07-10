@@ -57,10 +57,15 @@ type TransferErrorMsg struct {
 	Err error
 }
 
+// Run executes a transfer job. For MVP, srcFS and dstFS will both be LocalFS.
+// For M3+, when SFTP is wired, one will be RemoteFS.
 func Run(job Job, events chan<- tea.Msg) {
-	src := fsys.LocalFS{}
-	dst := fsys.LocalFS{}
+	RunWithFS(job, events, fsys.LocalFS{}, fsys.LocalFS{})
+}
 
+// RunWithFS executes a transfer with explicit source and destination FileSystems.
+// This allows testing and future SSH integration.
+func RunWithFS(job Job, events chan<- tea.Msg, src fsys.FileSystem, dst fsys.FileSystem) {
 	srcEntry, err := src.Stat(job.SourcePath)
 	if err != nil {
 		events <- TransferErrorMsg{ID: job.ID, Err: err}
