@@ -2,6 +2,12 @@
 
 A terminal-based file transfer client for Linux (Ubuntu/Pop_OS) built with Go, Bubbletea, and Lipgloss.
 
+**📖 Documentation:**
+- **User guide** — This README
+- **[Developer/Agent guide](AGENT_GUIDE.md)** — Architecture, concurrency model, how to contribute
+- **[Implementation notes](CLAUDE.md)** — Detailed status, code patterns, critical path
+- **[GitHub issues](https://github.com/brucevanhorn2/exfil/issues)** — Roadmap and task tracking
+
 ## MVP Status
 
 **Current (M1-M4 partial):** Local file browsing and copying with a live transfer queue and progress bars.

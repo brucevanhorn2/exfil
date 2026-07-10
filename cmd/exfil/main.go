@@ -18,11 +18,19 @@ func main() {
 
 	logger := log.New(f, "", log.LstdFlags)
 
+	// eventsCh: Worker goroutines send progress/done/error messages here.
+	// Buffered to avoid blocking workers, UI drains it via subscription (re-arming tea.Cmd).
 	eventsCh := make(chan tea.Msg, 64)
+
+	// jobsCh: UI sends transfer jobs here. Workers pull from this channel.
+	// This bounds concurrency to N workers — only N goroutines pull from the channel.
 	jobsCh := make(chan transfer.Job, 256)
 
+	// Start 3 worker goroutines, each pulling jobs and sending progress on eventsCh.
+	// Workers run for the lifetime of the program (blocking on channel recv).
 	transfer.StartWorkers(3, jobsCh, eventsCh)
 
+	// Pass both channels to the UI model.
 	model := ui.NewModel(eventsCh, jobsCh, logger)
 
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())

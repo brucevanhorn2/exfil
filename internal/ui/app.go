@@ -176,17 +176,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case transfer.TransferProgressMsg:
+		// Worker sent a progress update. Update the queue pane and re-arm the subscription.
+		// CRITICAL: Always return waitForEvent() after handling transfer messages,
+		// or the subscription dies and we stop receiving progress.
 		m.queuePane.UpdateTransfer(msg.ID, StatusRunning, msg.Done, msg.Total, msg.Speed, "")
 		return m, waitForEvent(m.eventsCh)
 
 	case transfer.TransferDoneMsg:
+		// Transfer completed successfully.
 		m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
-		if m.localPane.Focus {
-			m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
-		}
+		// TODO (M4): Refresh destination pane listing to show the new file
 		return m, waitForEvent(m.eventsCh)
 
 	case transfer.TransferErrorMsg:
+		// Transfer failed. Mark it as error and keep the error message visible.
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
 		return m, waitForEvent(m.eventsCh)
 	}
@@ -284,6 +287,11 @@ func (m *Model) enqueueCopy() tea.Cmd {
 	}
 }
 
+// waitForEvent is the "subscription" pattern in bubbletea.
+// It returns a tea.Cmd that blocks on receiving one message from ch,
+// then delivers it to Update. It must be re-armed after each message
+// (i.e., return this command again) or the subscription dies.
+// Workers send progress/done/error messages on this channel continuously.
 func waitForEvent(ch chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-ch

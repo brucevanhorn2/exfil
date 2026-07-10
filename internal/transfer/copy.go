@@ -9,6 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// progressWriter wraps an io.Writer and tracks bytes written, emitting progress messages.
+// It throttles messages to ~6 per second (150ms intervals) to avoid flooding eventsCh
+// on fast copies, and always emits when done. Used as:
+//   io.Copy(dst, io.TeeReader(src, &progressWriter{...}))
 type progressWriter struct {
 	id        int
 	total     int64
@@ -22,6 +26,8 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	n := len(p)
 	pw.written += int64(n)
 	now := time.Now()
+	// Throttle messages: only send if 150ms has passed or we're at 100%.
+	// This prevents fast local disk copies from generating thousands of messages.
 	if now.Sub(pw.lastSent) > 150*time.Millisecond || pw.written == pw.total {
 		pw.lastSent = now
 		elapsed := now.Sub(pw.startTime).Seconds()
