@@ -26,6 +26,11 @@ type readDirMsg struct {
 	err     error
 }
 
+type sshConnectedMsg struct {
+	sftpClient interface{}
+	err        error
+}
+
 type transferProgressMsg struct {
 	ID    int
 	Done  int64
