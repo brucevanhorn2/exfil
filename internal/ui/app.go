@@ -6,33 +6,23 @@ import (
 	"os"
 
 	"github.com/bvanhorn/exfil/internal/fsys"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 type Screen string
 
 const (
-	ScreenBrowsing Screen = "browsing"
+	ScreenBrowsing   Screen = "browsing"
 	ScreenHostPicker Screen = "hostpicker"
 	ScreenAddHost    Screen = "addhost"
 )
 
 // Messages
 type readDirMsg struct {
-	pane  string // "local" or "remote"
+	pane    string
 	entries []fsys.Entry
-	err   error
-}
-
-type sshConnectedMsg struct {
-	err error
-}
-
-type transferStartedMsg struct {
-	ID       int
-	Filename string
-	Total    int64
+	err     error
 }
 
 type transferProgressMsg struct {
@@ -49,11 +39,6 @@ type transferDoneMsg struct {
 type transferErrorMsg struct {
 	ID  int
 	Err error
-}
-
-type winSizeMsg struct {
-	width  int
-	height int
 }
 
 // Model is the root bubbletea model
@@ -124,8 +109,51 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queuePane.Height = 3
 
 	case tea.KeyMsg:
-		keyMsg := handleKey(msg)
-		return m.handleKey(keyMsg)
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "tab":
+			m.localPane.SetFocus(!m.localPane.Focus)
+			m.remotePane.SetFocus(m.localPane.Focus)
+		case "up":
+			if m.localPane.Focus {
+				m.localPane.Up()
+			} else {
+				m.remotePane.Up()
+			}
+		case "down":
+			if m.localPane.Focus {
+				m.localPane.Down()
+			} else {
+				m.remotePane.Down()
+			}
+		case "enter":
+			if m.localPane.Focus {
+				if err := m.localPane.Enter(); err != nil {
+					m.statusMsg = fmt.Sprintf("Error: %v", err)
+				}
+			} else {
+				if err := m.remotePane.Enter(); err != nil {
+					m.statusMsg = fmt.Sprintf("Error: %v", err)
+				}
+			}
+		case "backspace":
+			if m.localPane.Focus {
+				if err := m.localPane.Back(); err != nil {
+					m.statusMsg = fmt.Sprintf("Error: %v", err)
+				}
+			} else {
+				if err := m.remotePane.Back(); err != nil {
+					m.statusMsg = fmt.Sprintf("Error: %v", err)
+				}
+			}
+		case " ":
+			if m.localPane.Focus {
+				m.localPane.ToggleSelect()
+			} else {
+				m.remotePane.ToggleSelect()
+			}
+		}
 
 	case readDirMsg:
 		if msg.err != nil {
@@ -148,56 +176,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transferErrorMsg:
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
 		return m, waitForEvent(m.eventsCh)
-	}
-
-	return m, nil
-}
-
-func (m *Model) handleKey(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg {
-	case KeyQuit:
-		return m, tea.Quit
-	case KeyTab:
-		m.localPane.SetFocus(!m.localPane.Focus)
-		m.remotePane.SetFocus(m.localPane.Focus)
-	case KeyUp:
-		if m.localPane.Focus {
-			m.localPane.Up()
-		} else {
-			m.remotePane.Up()
-		}
-	case KeyDown:
-		if m.localPane.Focus {
-			m.localPane.Down()
-		} else {
-			m.remotePane.Down()
-		}
-	case KeyEnter:
-		if m.localPane.Focus {
-			if err := m.localPane.Enter(); err != nil {
-				m.statusMsg = fmt.Sprintf("Error: %v", err)
-			}
-		} else {
-			if err := m.remotePane.Enter(); err != nil {
-				m.statusMsg = fmt.Sprintf("Error: %v", err)
-			}
-		}
-	case KeyBackspace:
-		if m.localPane.Focus {
-			if err := m.localPane.Back(); err != nil {
-				m.statusMsg = fmt.Sprintf("Error: %v", err)
-			}
-		} else {
-			if err := m.remotePane.Back(); err != nil {
-				m.statusMsg = fmt.Sprintf("Error: %v", err)
-			}
-		}
-	case KeySpace:
-		if m.localPane.Focus {
-			m.localPane.ToggleSelect()
-		} else {
-			m.remotePane.ToggleSelect()
-		}
 	}
 
 	return m, nil
