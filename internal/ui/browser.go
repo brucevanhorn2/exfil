@@ -52,11 +52,18 @@ func (b *BrowserPane) Refresh() error {
 		return entries[i].Name < entries[j].Name
 	})
 
+	b.SetEntries(entries)
+	return nil
+}
+
+// SetEntries replaces the pane's listing and resets cursor, scroll, and
+// selection. Used both by Refresh (synchronous) and by the async readDirCmd
+// path (remote listings loaded off the UI thread), so state stays consistent.
+func (b *BrowserPane) SetEntries(entries []fsys.Entry) {
 	b.Entries = entries
 	b.Cursor = 0
 	b.Selected = make(map[string]bool)
 	b.scrollTop = 0
-	return nil
 }
 
 func (b *BrowserPane) Up() {

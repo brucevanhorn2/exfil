@@ -4,11 +4,18 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/user"
+	"sort"
 
+	"github.com/bvanhorn/exfil/internal/config"
 	"github.com/bvanhorn/exfil/internal/fsys"
+	"github.com/bvanhorn/exfil/internal/sshclient"
 	"github.com/bvanhorn/exfil/internal/transfer"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 )
 
 type Screen string
@@ -27,7 +34,9 @@ type readDirMsg struct {
 }
 
 type sshConnectedMsg struct {
-	sftpClient interface{}
+	host       config.Host
+	sshClient  *ssh.Client
+	sftpClient *sftp.Client
 	err        error
 }
 
@@ -49,18 +58,29 @@ type transferErrorMsg struct {
 
 // Model is the root bubbletea model
 type Model struct {
-	width       int
-	height      int
-	screen      Screen
-	theme       Theme
-	localPane   *BrowserPane
-	remotePane  *BrowserPane
-	queuePane   *QueuePane
-	statusMsg   string
-	nextID      int
-	eventsCh    chan tea.Msg
-	jobsCh      chan transfer.Job
-	logger      *log.Logger
+	width      int
+	height     int
+	screen     Screen
+	theme      Theme
+	localPane  *BrowserPane
+	remotePane *BrowserPane
+	hostPicker *HostPickerPane
+	queuePane  *QueuePane
+	statusMsg  string
+	nextID     int
+	eventsCh   chan tea.Msg
+	jobsCh     chan transfer.Job
+	logger     *log.Logger
+
+	// SSH connection state. Held so we can close cleanly and so the remote
+	// pane's RemoteFS shares the single sftp client (safe for concurrent use).
+	sshClient  *ssh.Client
+	sftpClient *sftp.Client
+	connected  bool
+
+	// connecting is true while an SSH dial is in flight; drives the spinner.
+	spinner    spinner.Model
+	connecting bool
 }
 
 func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logger) *Model {
@@ -72,17 +92,28 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	localFS := fsys.LocalFS{}
 	home, _ := localFS.Home()
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = theme.PaneTitleFocus
+
+	hostPicker := NewHostPickerPane(theme)
+	if err := hostPicker.Load(); err != nil {
+		logger.Printf("failed to load hosts.yaml: %v", err)
+	}
+
 	m := &Model{
-		screen:    ScreenBrowsing,
-		theme:     theme,
-		eventsCh:  eventsCh,
-		jobsCh:    jobsCh,
-		logger:    logger,
-		localPane: NewBrowserPane("local", localFS, theme),
+		screen:     ScreenBrowsing,
+		theme:      theme,
+		eventsCh:   eventsCh,
+		jobsCh:     jobsCh,
+		logger:     logger,
+		localPane:  NewBrowserPane("local", localFS, theme),
 		remotePane: NewBrowserPane("remote", fsys.LocalFS{}, theme),
-		queuePane: NewQueuePane(theme),
-		statusMsg: "Ready. [Tab] switch pane  [↑/↓] navigate  [↵] enter  [⌫] back  [space] select  [c] copy  [q] quit",
-		nextID:    1,
+		hostPicker: hostPicker,
+		queuePane:  NewQueuePane(theme),
+		spinner:    sp,
+		statusMsg:  "Ready. [Tab] switch pane  [↑/↓] nav  [↵] enter  [⌫] back  [space] select  [c] copy  [s] connect  [q] quit",
+		nextID:     1,
 	}
 
 	m.localPane.Cwd = home
@@ -117,62 +148,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queuePane.Height = 3
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q":
-			return m, tea.Quit
-		case "tab":
-			m.localPane.SetFocus(!m.localPane.Focus)
-			m.remotePane.SetFocus(m.localPane.Focus)
-		case "up":
-			if m.localPane.Focus {
-				m.localPane.Up()
-			} else {
-				m.remotePane.Up()
-			}
-		case "down":
-			if m.localPane.Focus {
-				m.localPane.Down()
-			} else {
-				m.remotePane.Down()
-			}
-		case "enter":
-			if m.localPane.Focus {
-				if err := m.localPane.Enter(); err != nil {
-					m.statusMsg = fmt.Sprintf("Error: %v", err)
-				}
-			} else {
-				if err := m.remotePane.Enter(); err != nil {
-					m.statusMsg = fmt.Sprintf("Error: %v", err)
-				}
-			}
-		case "backspace":
-			if m.localPane.Focus {
-				if err := m.localPane.Back(); err != nil {
-					m.statusMsg = fmt.Sprintf("Error: %v", err)
-				}
-			} else {
-				if err := m.remotePane.Back(); err != nil {
-					m.statusMsg = fmt.Sprintf("Error: %v", err)
-				}
-			}
-		case " ":
-			if m.localPane.Focus {
-				m.localPane.ToggleSelect()
-			} else {
-				m.remotePane.ToggleSelect()
-			}
-		case "c":
-			return m, m.enqueueCopy()
+		// Route keys by the active screen. The host picker is a modal overlay
+		// on top of the browsing view.
+		if m.screen == ScreenHostPicker {
+			return m.handleHostPickerKey(msg)
 		}
+		return m.handleBrowsingKey(msg)
+
+	case spinner.TickMsg:
+		// Keep the connect spinner animating only while a dial is in flight.
+		// Re-arming the tick only when connecting avoids idle redraws.
+		if m.connecting {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case sshConnectedMsg:
+		m.connecting = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Connection to %s failed: %v", msg.host.Name, msg.err)
+			m.logger.Printf("ssh dial %s: %v", msg.host.Name, msg.err)
+			return m, nil
+		}
+		// Wire the remote pane to a RemoteFS backed by the single sftp client.
+		m.sshClient = msg.sshClient
+		m.sftpClient = msg.sftpClient
+		m.connected = true
+		rfs := fsys.NewRemoteFS(msg.sftpClient)
+		m.remotePane.FS = rfs
+		m.remotePane.Title = msg.host.Name
+
+		cwd := msg.host.RemotePath
+		if cwd == "" {
+			cwd, _ = rfs.Home()
+		}
+		m.remotePane.Cwd = cwd
+		m.statusMsg = fmt.Sprintf("Connected to %s@%s", msg.host.User, msg.host.Hostname)
+		// List the remote directory off the UI thread (network call).
+		return m, readDirCmd("remote", rfs, cwd)
 
 	case readDirMsg:
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error reading dir: %v", msg.err)
 		}
 		if msg.pane == "local" {
-			m.localPane.Entries = msg.entries
+			m.localPane.SetEntries(msg.entries)
 		} else if msg.pane == "remote" {
-			m.remotePane.Entries = msg.entries
+			m.remotePane.SetEntries(msg.entries)
 		}
 
 	case transfer.TransferProgressMsg:
@@ -197,6 +221,123 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleBrowsingKey handles keys in the dual-pane browsing screen.
+func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	active := m.remotePane
+	if m.localPane.Focus {
+		active = m.localPane
+	}
+
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.closeSSH()
+		return m, tea.Quit
+	case "s":
+		// Open the Site Manager overlay to pick a host to connect to.
+		if err := m.hostPicker.Load(); err != nil {
+			m.statusMsg = fmt.Sprintf("Error loading hosts: %v", err)
+		}
+		m.screen = ScreenHostPicker
+	case "tab":
+		m.localPane.SetFocus(!m.localPane.Focus)
+		m.remotePane.SetFocus(m.localPane.Focus)
+	case "up":
+		active.Up()
+	case "down":
+		active.Down()
+	case "enter":
+		if err := active.Enter(); err != nil {
+			m.statusMsg = fmt.Sprintf("Error: %v", err)
+		}
+	case "backspace":
+		if err := active.Back(); err != nil {
+			m.statusMsg = fmt.Sprintf("Error: %v", err)
+		}
+	case " ":
+		active.ToggleSelect()
+	case "c":
+		return m, m.enqueueCopy()
+	}
+	return m, nil
+}
+
+// handleHostPickerKey handles keys in the Site Manager overlay.
+func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.screen = ScreenBrowsing
+	case "up":
+		m.hostPicker.Up()
+	case "down":
+		m.hostPicker.Down()
+	case "enter":
+		host := m.hostPicker.CurrentHost()
+		if host == nil {
+			m.statusMsg = "No host selected"
+			return m, nil
+		}
+		m.screen = ScreenBrowsing
+		m.connecting = true
+		m.statusMsg = fmt.Sprintf("Connecting to %s…", host.Name)
+		return m, tea.Batch(m.connectSSH(*host), m.spinner.Tick)
+	}
+	return m, nil
+}
+
+// connectSSH returns a tea.Cmd that dials the host off the UI thread and
+// reports the result as an sshConnectedMsg.
+func (m *Model) connectSSH(host config.Host) tea.Cmd {
+	return func() tea.Msg {
+		if host.Port == 0 {
+			host.Port = config.DefaultPort()
+		}
+		if host.User == "" {
+			if u, err := user.Current(); err == nil {
+				host.User = u.Username
+			}
+		}
+		sshClient, sftpClient, err := sshclient.Dial(host)
+		return sshConnectedMsg{
+			host:       host,
+			sshClient:  sshClient,
+			sftpClient: sftpClient,
+			err:        err,
+		}
+	}
+}
+
+// closeSSH tears down the SSH/SFTP connection if one is open.
+func (m *Model) closeSSH() {
+	if m.sftpClient != nil {
+		m.sftpClient.Close()
+		m.sftpClient = nil
+	}
+	if m.sshClient != nil {
+		m.sshClient.Close()
+		m.sshClient = nil
+	}
+	m.connected = false
+}
+
+// readDirCmd lists a directory on the given filesystem off the UI thread,
+// returning the sorted entries as a readDirMsg. Used for the initial remote
+// listing after connect, where the ReadDir is a network round-trip.
+func readDirCmd(pane string, fs fsys.FileSystem, cwd string) tea.Cmd {
+	return func() tea.Msg {
+		entries, err := fs.ReadDir(cwd)
+		if err != nil {
+			return readDirMsg{pane: pane, err: err}
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].IsDir != entries[j].IsDir {
+				return entries[i].IsDir
+			}
+			return entries[i].Name < entries[j].Name
+		})
+		return readDirMsg{pane: pane, entries: entries}
+	}
+}
+
 func (m *Model) View() string {
 	m.localPane.Width = m.width/2 - 3
 	m.localPane.Height = m.height - 8
@@ -216,7 +357,17 @@ func (m *Model) View() string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, panes, queueView)
 
-	statusBar := m.theme.StatusBar.Render(m.statusMsg)
+	// The Site Manager is a modal overlay: when active, it replaces the
+	// dual-pane content area.
+	if m.screen == ScreenHostPicker {
+		content = m.hostPicker.View()
+	}
+
+	status := m.statusMsg
+	if m.connecting {
+		status = m.spinner.View() + " " + status
+	}
+	statusBar := m.theme.StatusBar.Render(status)
 
 	footer := lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
 
@@ -278,6 +429,10 @@ func (m *Model) enqueueCopy() tea.Cmd {
 				SourcePath: srcPath,
 				DestPath:   dstPath,
 				Filename:   filename,
+				// Carry each side's filesystem so the worker knows whether this
+				// is a local copy, a download (remote→local), or an upload.
+				SrcFS: srcPane.FS,
+				DstFS: dstPane.FS,
 			}
 
 			m.jobsCh <- job

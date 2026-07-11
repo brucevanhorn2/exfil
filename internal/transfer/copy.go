@@ -63,14 +63,10 @@ type TransferErrorMsg struct {
 	Err error
 }
 
-// Run executes a transfer job. For MVP, srcFS and dstFS will both be LocalFS.
-// For M3+, when SFTP is wired, one will be RemoteFS.
-func Run(job Job, events chan<- tea.Msg) {
-	RunWithFS(job, events, fsys.LocalFS{}, fsys.LocalFS{})
-}
-
-// RunWithFS executes a transfer with explicit source and destination FileSystems.
-// This allows testing and future SSH integration.
+// RunWithFS executes a transfer with explicit source and destination
+// FileSystems. The worker pool calls this with the job's SrcFS/DstFS, so the
+// same code path handles local copies, downloads (RemoteFS→LocalFS), and
+// uploads (LocalFS→RemoteFS).
 func RunWithFS(job Job, events chan<- tea.Msg, src fsys.FileSystem, dst fsys.FileSystem) {
 	srcEntry, err := src.Stat(job.SourcePath)
 	if err != nil {
@@ -82,12 +78,6 @@ func RunWithFS(job Job, events chan<- tea.Msg, src fsys.FileSystem, dst fsys.Fil
 		events <- TransferErrorMsg{ID: job.ID, Err: fmt.Errorf("directories not supported")}
 		return
 	}
-
-	events <- struct {
-		ID       int
-		Filename string
-		Total    int64
-	}{ID: job.ID, Filename: job.Filename, Total: srcEntry.Size}
 
 	srcFile, err := src.Open(job.SourcePath)
 	if err != nil {
