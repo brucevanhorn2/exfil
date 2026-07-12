@@ -138,7 +138,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	sp.Spinner = spinner.Dot
 	sp.Style = theme.PaneTitleFocus
 
-	hostPicker := NewHostPickerPane(theme)
+	hostPicker := NewHostPickerPane()
 	if err := hostPicker.Load(); err != nil {
 		logger.Printf("failed to load hosts.yaml: %v", err)
 	}
@@ -488,7 +488,7 @@ func (m *Model) View() string {
 	// The Site Manager is a modal overlay: when active, it replaces the
 	// dual-pane content area.
 	if m.screen == ScreenHostPicker {
-		content = m.hostPicker.View()
+		content = m.hostPicker.View(m.theme, m.loc)
 	} else if m.screen == ScreenAddHost {
 		content = m.hostForm.View()
 	} else if m.screen == ScreenAbout {
