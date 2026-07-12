@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/user"
@@ -165,7 +164,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		settingsPane:      settingsPane,
 		queuePane:         NewQueuePane(),
 		spinner:           sp,
-		statusMsg:         "Ready.",
+		statusMsg:         loc.T("status_ready"),
 		nextID:            1,
 	}
 
@@ -237,7 +236,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sshConnectedMsg:
 		m.connecting = false
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Connection to %s failed: %v", msg.host.Name, msg.err)
+			m.statusMsg = m.loc.T("status_connection_failed", msg.host.Name, msg.err)
 			m.logger.Printf("ssh dial %s: %v", msg.host.Name, msg.err)
 			return m, nil
 		}
@@ -254,13 +253,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cwd, _ = rfs.Home()
 		}
 		m.remotePane.Cwd = cwd
-		m.statusMsg = fmt.Sprintf("Connected to %s@%s", msg.host.User, msg.host.Hostname)
+		m.statusMsg = m.loc.T("status_connected", msg.host.User, msg.host.Hostname)
 		// List the remote directory off the UI thread (network call).
 		return m, readDirCmd("remote", rfs, cwd)
 
 	case readDirMsg:
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Error reading dir: %v", msg.err)
+			m.statusMsg = m.loc.T("status_read_dir_error", msg.err)
 		}
 		if msg.pane == "local" {
 			m.localPane.SetEntries(msg.entries)
@@ -304,7 +303,7 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		// Open the Site Manager overlay to pick a host to connect to.
 		if err := m.hostPicker.Load(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error loading hosts: %v", err)
+			m.statusMsg = m.loc.T("status_hosts_load_error", err)
 		}
 		m.screen = ScreenHostPicker
 	case "?":
@@ -328,11 +327,11 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enqueueCopyDirection(m.remotePane, m.localPane)
 	case "enter":
 		if err := active.Enter(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error: %v", err)
+			m.statusMsg = m.loc.T("error_prefix") + err.Error()
 		}
 	case "backspace":
 		if err := active.Back(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error: %v", err)
+			m.statusMsg = m.loc.T("error_prefix") + err.Error()
 		}
 	case " ":
 		active.ToggleSelect()
@@ -391,7 +390,7 @@ func (m *Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// know what's in hosts.yaml — saving here would overwrite it
 			// with only the new lingo/theme fields and silently drop the
 			// existing Hosts list. Abort instead, matching HostFormPane.Save().
-			m.statusMsg = fmt.Sprintf("Error loading hosts.yaml, settings not saved: %v", err)
+			m.statusMsg = m.loc.T("err_config_load", err)
 			m.screen = ScreenBrowsing
 			return m, nil
 		}
@@ -399,7 +398,7 @@ func (m *Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cfg.PrimaryColor = m.primaryColorHex
 		cfg.SecondaryColor = m.secondaryColorHex
 		if err := cfg.Save(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error saving settings: %v", err)
+			m.statusMsg = m.loc.T("err_config_save", err)
 		}
 		m.screen = ScreenBrowsing
 		return m, nil
@@ -441,7 +440,7 @@ func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		host := m.hostPicker.CurrentHost()
 		if host == nil {
-			m.statusMsg = "No host selected"
+			m.statusMsg = m.loc.T("status_no_host_selected")
 			return m, nil
 		}
 		m.hostForm.ResetForEdit(*host)
@@ -449,12 +448,12 @@ func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		host := m.hostPicker.CurrentHost()
 		if host == nil {
-			m.statusMsg = "No host selected"
+			m.statusMsg = m.loc.T("status_no_host_selected")
 			return m, nil
 		}
 		m.screen = ScreenBrowsing
 		m.connecting = true
-		m.statusMsg = fmt.Sprintf("Connecting to %s…", host.Name)
+		m.statusMsg = m.loc.T("status_connecting", host.Name)
 		return m, tea.Batch(m.connectSSH(*host), m.spinner.Tick)
 	}
 	return m, nil
@@ -479,9 +478,9 @@ func (m *Model) handleHostFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if err := m.hostPicker.Load(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error reloading hosts: %v", err)
+			m.statusMsg = m.loc.T("status_hosts_load_error", err)
 		}
-		m.statusMsg = fmt.Sprintf("Saved host %q", host.Name)
+		m.statusMsg = m.loc.T("status_host_saved", host.Name)
 		m.screen = ScreenHostPicker
 		return m, nil
 	}
@@ -605,9 +604,7 @@ func (m *Model) View() string {
 	// them. The host picker/form screens embed their own hints in their
 	// title, so only the transient status line applies there.
 	if m.screen == ScreenBrowsing {
-		hintsBar := m.theme.StatusBar.Render(
-			"[Tab] switch pane  [↑/↓] nav  [→] push→remote  [←] pull←local  [↵] enter  [⌫] back  [space] select  [s] hosts  [?] about  [q] quit",
-		)
+		hintsBar := m.theme.StatusBar.Render(m.loc.T("hint_bar"))
 		footer = lipgloss.JoinVertical(lipgloss.Left, footer, hintsBar)
 	}
 
@@ -637,7 +634,7 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 		}
 
 		if len(files) == 0 {
-			m.statusMsg = "No files selected"
+			m.statusMsg = m.loc.T("status_no_files_selected")
 			return nil
 		}
 
@@ -651,7 +648,7 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			}
 
 			if entry.IsDir {
-				m.statusMsg = "Directories not supported"
+				m.statusMsg = m.loc.T("status_dir_not_supported")
 				continue
 			}
 
