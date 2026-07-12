@@ -22,7 +22,7 @@ var catalogs map[string]Catalog
 // packOrder is the stable display/cycle order for Packs(). "plain" is first
 // since it's the fallback and the sensible default.
 // Other packs (secretsquirrel, keyboardcowboy, corposlut) are added in Task 2.
-var packOrder = []string{"plain"}
+var packOrder = []string{"plain", "secretsquirrel", "keyboardcowboy", "corposlut"}
 
 func init() {
 	catalogs = make(map[string]Catalog, len(packOrder))

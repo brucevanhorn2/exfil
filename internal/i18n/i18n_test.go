@@ -57,3 +57,23 @@ func TestPacksIncludesPlainFirst(t *testing.T) {
 		t.Errorf("expected Packs() to start with \"plain\", got %v", packs)
 	}
 }
+
+func TestPacksHasFourEntries(t *testing.T) {
+	if len(Packs()) != 4 {
+		t.Errorf("Packs() = %v, want 4 entries", Packs())
+	}
+}
+
+func TestNonPlainPacksHaveEveryPlainKey(t *testing.T) {
+	plainKeys := catalogs["plain"]
+	for _, pack := range Packs() {
+		if pack == "plain" {
+			continue
+		}
+		for key := range plainKeys {
+			if _, ok := catalogs[pack][key]; !ok {
+				t.Errorf("pack %q is missing key %q (present in plain)", pack, key)
+			}
+		}
+	}
+}
