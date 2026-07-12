@@ -2377,7 +2377,13 @@ func (m *Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		cfg, err := config.Load()
 		if err != nil {
-			cfg = &config.Config{}
+			// A genuine parse failure (not "file missing") means we don't
+			// know what's in hosts.yaml — saving here would overwrite it
+			// with only the new lingo/theme fields and silently drop the
+			// existing Hosts list. Abort instead, matching HostFormPane.Save().
+			m.statusMsg = fmt.Sprintf("Error loading hosts.yaml, settings not saved: %v", err)
+			m.screen = ScreenBrowsing
+			return m, nil
 		}
 		cfg.Lingo = m.loc.Pack()
 		cfg.PrimaryColor = m.primaryColorHex
@@ -2462,6 +2468,19 @@ Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 git add internal/ui/app.go
 git commit -m "Wire the Settings screen into Model (key S, live color preview)"
 ```
+
+**Post-implementation correction (found in review, applied as a follow-up
+commit rather than amending):** Step 3's `"enter"` case as originally written
+above fell back to a fresh `&config.Config{}` when `config.Load()` returned a
+non-nil error, then saved that empty config — silently overwriting
+`hosts.yaml` and destroying its `Hosts` list if the file existed but failed
+to parse (a real error, not just "file missing", which `config.Load()`
+already handles safely). The code above has been corrected in place to abort
+and surface an error instead, matching `HostFormPane.Save()`'s existing
+pattern. Add a regression test to `internal/ui/app_test.go` alongside the
+other `NewModel`/settings tests: write a syntactically-invalid `hosts.yaml`
+after model construction, invoke `handleSettingsKey` with `KeyEnter`, and
+assert the file is unchanged and `m.statusMsg` reports the error.
 
 ---
 
