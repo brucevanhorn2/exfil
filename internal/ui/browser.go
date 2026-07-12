@@ -19,6 +19,11 @@ type BrowserPane struct {
 	Width     int
 	Height    int
 	scrollTop int
+
+	// EmptyMessage renders in place of the (empty) file listing — used by
+	// the remote pane before an SSH connection is made, so it never looks
+	// like it's browsing a real filesystem when it isn't.
+	EmptyMessage string
 }
 
 func NewBrowserPane(title string, fs fsys.FileSystem) *BrowserPane {
@@ -164,6 +169,12 @@ func (b *BrowserPane) View(theme Theme) string {
 	}
 
 	rowsRendered := 0
+
+	if len(b.Entries) == 0 && b.EmptyMessage != "" {
+		lines = append(lines, "", theme.BrowserFile.Render(b.EmptyMessage))
+		rowsRendered += 2
+	}
+
 	for i := b.scrollTop; i < len(b.Entries) && i < b.scrollTop+contentHeight; i++ {
 		e := b.Entries[i]
 		isCursor := i == b.Cursor && b.Focus

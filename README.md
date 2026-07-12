@@ -111,11 +111,12 @@ Hosts are stored in `~/.config/exfil/hosts.yaml` (YAML, supports comments). You 
 
 ## Testing locally
 
-The remote pane defaults to browsing the local filesystem (rooted at `/`) until you connect to a host, so you can test transfers without SSH:
+Without a connection, the remote pane is empty (a "press `s` to select a host" message) so it's never mistaken for a live remote host. Pass `-t` to instead browse the local filesystem (rooted at `/`) in both panes, so you can test transfers without SSH:
 
 ```bash
 mkdir -p /tmp/exfil-test/{a,b}
 echo "test content" > /tmp/exfil-test/a/file1.txt
+./exfil -t
 # In the app, navigate the local (left) pane to /tmp/exfil-test/a
 # Navigate the remote (right) pane to /tmp/exfil-test/b
 # Select file1.txt in the left pane, press '→' to copy it to the right

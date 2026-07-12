@@ -17,6 +17,7 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ Cyberpunk theming; both browser panes force-fill their assigned width/height
 - ✅ About screen (`?`) — ASCII logo, version (via `git describe`, injected by `make build`), license
 - ✅ Selectable lingo packs (`internal/i18n`) and free-form hex theme colors, via a dedicated Settings screen (`S`)
+- ✅ Remote pane stays empty (with a "press `s` to connect" hint) until a real SSH connection is made — never defaults to browsing the local filesystem in normal use; `-t` opts back into that for local-to-local test transfers
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
 
 **What's genuinely left** (not urgent, not blocking normal use):
@@ -44,7 +45,7 @@ Both panes implement the same `fsys.FileSystem` interface. This eliminates code 
 - `Open/Create` → io.ReadCloser / io.WriteCloser
 - `Stat(path)` → single Entry
 
-The remote pane defaults to a `LocalFS` rooted at `/` until an SSH connection is made (both panes get an initial `Refresh()` in `Model.Init()`), which is what makes local-to-local testing possible without a live host — see README's "Testing locally" section.
+Outside `-t` test mode, the remote pane's `FS`/`Cwd` are never read before a real SSH connection: `Model.Init()` skips its `Refresh()`, `View()` shows `BrowserPane.EmptyMessage` instead of a listing, and `enqueueCopyDirection` refuses any transfer touching the remote pane while `!m.connected`. This prevents the remote pane from ever being mistaken for a live host. With `-t` (`Model.testMode`), it behaves as a `LocalFS` rooted at `/` from startup, which is what makes local-to-local testing possible without a live host — see README's "Testing locally" section.
 
 ### Transfer progress
 
@@ -93,10 +94,11 @@ make build
 ./exfil
 ```
 
-To test transfers without SSH (remote pane defaults to local filesystem at `/`):
+To test transfers without SSH, pass `-t` (remote pane then defaults to local filesystem at `/` instead of showing the disconnected placeholder):
 ```bash
 mkdir -p /tmp/exfil-test/{a,b}
 echo hi > /tmp/exfil-test/a/file.txt
+./exfil -t
 # Navigate local pane to /tmp/exfil-test/a, remote pane to /tmp/exfil-test/b
 # Select file.txt, press '→' to copy it across
 ```

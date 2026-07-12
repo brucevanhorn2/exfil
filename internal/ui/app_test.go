@@ -20,7 +20,7 @@ func TestNewModelDefaultsWhenConfigEmpty(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger())
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
 
 	if m.loc.Pack() != "plain" {
 		t.Errorf("expected default pack \"plain\", got %q", m.loc.Pack())
@@ -42,7 +42,7 @@ func TestNewModelUsesSavedLingoAndColors(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger())
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
 
 	if m.loc.Pack() != "keyboardcowboy" {
 		t.Errorf("expected pack \"keyboardcowboy\", got %q", m.loc.Pack())
@@ -61,7 +61,7 @@ func TestNewModelFallsBackOnInvalidStoredColor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger())
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
 
 	if m.primaryColorHex != DefaultPrimaryColor {
 		t.Errorf("expected fallback to default primary color for invalid stored value, got %q", m.primaryColorHex)
@@ -77,7 +77,7 @@ func TestHandleSettingsKeyEnterAbortsSaveOnConfigLoadFailure(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger())
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
 	m.settingsPane.ResetFromConfig(m.loc.Pack(), m.primaryColorHex, m.secondaryColorHex)
 	m.screen = ScreenSettings
 
@@ -126,7 +126,10 @@ func TestTransferDoneMsgRefreshesDestinationPane(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger())
+	// testMode=true: this test exercises a local-to-local transfer without a
+	// real SSH connection, which enqueueCopyDirection only permits when
+	// either connected or in test mode.
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), true)
 	m.localPane.FS = fsys.LocalFS{}
 	m.localPane.Cwd = srcDir
 	m.remotePane.FS = fsys.LocalFS{}
@@ -211,5 +214,81 @@ func TestTransferDoneMsgRefreshesDestinationPane(t *testing.T) {
 
 	if _, stillTracked := m.transferDest[job.ID]; stillTracked {
 		t.Errorf("expected transferDest entry for job %d to be cleared after completion", job.ID)
+	}
+}
+
+// TestEnqueueCopyDirectionBlocksDisconnectedRemote is a regression test for
+// a bug where the remote pane defaulted to browsing the local filesystem
+// before any SSH connection was made — confusing when the local and remote
+// users happen to share a username. Outside test mode, with no connection,
+// a transfer touching the remote pane must be refused rather than silently
+// copying to/from the local disk underneath it.
+func TestEnqueueCopyDirectionBlocksDisconnectedRemote(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+
+	select {
+	case job := <-m.jobsCh:
+		t.Fatalf("expected no job to be queued while disconnected, got %+v", job)
+	default:
+	}
+
+	if m.statusMsg == "" || m.statusMsg == "Ready." {
+		t.Errorf("expected a not-connected status message, got %q", m.statusMsg)
+	}
+
+	if _, err := os.Stat(filepath.Join(dstDir, "file.txt")); !os.IsNotExist(err) {
+		t.Errorf("expected no file to be written to the destination while disconnected, stat err = %v", err)
+	}
+}
+
+// TestViewSetsDisconnectedRemoteEmptyMessage confirms the remote pane's
+// EmptyMessage is only populated when neither connected nor in test mode,
+// and is cleared as soon as either becomes true.
+func TestViewSetsDisconnectedRemoteEmptyMessage(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.width, m.height = 100, 40
+
+	m.View()
+	if m.remotePane.EmptyMessage == "" {
+		t.Error("expected remotePane.EmptyMessage to be set while disconnected and not in test mode")
+	}
+
+	m.connected = true
+	m.View()
+	if m.remotePane.EmptyMessage != "" {
+		t.Error("expected remotePane.EmptyMessage to be cleared once connected")
+	}
+
+	m.connected = false
+	m.testMode = true
+	m.View()
+	if m.remotePane.EmptyMessage != "" {
+		t.Error("expected remotePane.EmptyMessage to be cleared in test mode")
 	}
 }

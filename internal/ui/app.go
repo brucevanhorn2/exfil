@@ -93,9 +93,16 @@ type Model struct {
 	// connecting is true while an SSH dial is in flight; drives the spinner.
 	spinner    spinner.Model
 	connecting bool
+
+	// testMode (the -t CLI flag) shows the local filesystem in the remote
+	// pane too, without a real connection — for local-to-local transfer
+	// testing. Outside test mode, the remote pane stays empty (no
+	// navigation, no transfers) until a real SSH connection is made, so it
+	// never gets mistaken for a live remote host.
+	testMode bool
 }
 
-func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logger) *Model {
+func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logger, testMode bool) *Model {
 	if logger == nil {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
@@ -171,6 +178,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		statusMsg:         loc.T("status_ready"),
 		nextID:            1,
 		transferDest:      make(map[int]string),
+		testMode:          testMode,
 	}
 
 	m.localPane.Cwd = home
@@ -181,26 +189,33 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		func() tea.Msg {
 			if err := m.localPane.Refresh(); err != nil {
 				return readDirMsg{pane: "local", err: err}
 			}
 			return readDirMsg{pane: "local", entries: m.localPane.Entries}
 		},
-		func() tea.Msg {
-			// Refresh the remote pane too, even before an SSH connection is
-			// made: it defaults to a LocalFS rooted at "/", which lets both
-			// panes be used for local-to-local testing (see README). Once
-			// connected, sshConnectedMsg's readDirCmd overwrites this with
-			// the real remote listing.
+		waitForEvent(m.eventsCh),
+	}
+
+	if m.testMode {
+		// -t: refresh the remote pane too, even before an SSH connection is
+		// made — it defaults to a LocalFS rooted at "/", which lets both
+		// panes be used for local-to-local testing (see README). Once
+		// connected, sshConnectedMsg's readDirCmd overwrites this with the
+		// real remote listing. Outside test mode, the remote pane stays
+		// empty until a real connection is made (see handleBrowsingKey and
+		// View()), so it's never mistaken for a live remote host.
+		cmds = append(cmds, func() tea.Msg {
 			if err := m.remotePane.Refresh(); err != nil {
 				return readDirMsg{pane: "remote", err: err}
 			}
 			return readDirMsg{pane: "remote", entries: m.remotePane.Entries}
-		},
-		waitForEvent(m.eventsCh),
-	)
+		})
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -577,6 +592,12 @@ func (m *Model) View() string {
 	m.aboutPane.Width = m.width - 4
 	m.aboutPane.Height = m.height - queueHeight - 2
 
+	if m.connected || m.testMode {
+		m.remotePane.EmptyMessage = ""
+	} else {
+		m.remotePane.EmptyMessage = m.loc.T("hint_remote_disconnected")
+	}
+
 	localView := m.localPane.View(m.theme)
 	remoteView := m.remotePane.View(m.theme)
 
@@ -644,6 +665,11 @@ func (m *Model) enqueueCopy() tea.Cmd {
 // file travels: Right pushes local → remote, Left pulls remote → local.
 func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 	return func() tea.Msg {
+		if (srcPane == m.remotePane || dstPane == m.remotePane) && !m.connected && !m.testMode {
+			m.statusMsg = m.loc.T("status_not_connected")
+			return nil
+		}
+
 		files := srcPane.GetSelectedFiles()
 		if len(files) == 0 {
 			if entry := srcPane.CurrentFile(); entry != nil {
