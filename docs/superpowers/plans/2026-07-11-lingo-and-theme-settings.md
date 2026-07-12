@@ -567,70 +567,7 @@ git commit -m "Add Lingo, PrimaryColor, SecondaryColor to Config"
 
 - [ ] **Step 1: Write the failing test**
 
-```go
-// internal/ui/theme_test.go
-package ui
-
-import "testing"
-
-func TestParseHexColorValid(t *testing.T) {
-	c, err := parseHexColor("#B341F5")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(c) != "#B341F5" {
-		t.Errorf("got %q, want %q", c, "#B341F5")
-	}
-}
-
-func TestParseHexColorInvalid(t *testing.T) {
-	tests := []string{"", "B341F5", "#B341F", "#GGGGGG", "purple"}
-	for _, in := range tests {
-		if _, err := parseHexColor(in); err == nil {
-			t.Errorf("parseHexColor(%q): expected error, got none", in)
-		}
-	}
-}
-
-func TestNewThemeAppliesPrimaryAndSecondary(t *testing.T) {
-	theme := NewTheme("#39FF14", "#3A3A4A")
-
-	if theme.PaneBorderFocus.GetBorderTopForeground() != nil {
-		// BorderForeground sets all sides; check via GetBorderStyle indirectly
-		// is fragile, so instead verify via the Foreground-based styles below,
-		// which are simpler to assert on directly.
-		_ = theme // no-op to keep this branch harmless if lipgloss internals differ
-	}
-	if got := theme.PaneTitleFocus.GetForeground(); got != stringColor("#39FF14") {
-		t.Errorf("PaneTitleFocus foreground = %v, want #39FF14", got)
-	}
-	if got := theme.PaneTitle.GetForeground(); got != stringColor("#3A3A4A") {
-		t.Errorf("PaneTitle foreground = %v, want #3A3A4A", got)
-	}
-}
-
-// stringColor mirrors how NewTheme constructs lipgloss.Color("#hex") values,
-// so the comparison in the test above is against the same concrete type
-// lipgloss.Style.GetForeground() returns.
-func stringColor(hex string) interface{ String() string } {
-	return colorStringer(hex)
-}
-
-type colorStringer string
-
-func (c colorStringer) String() string { return string(c) }
-```
-
-Note: `lipgloss.Style.GetForeground()` returns a `lipgloss.TerminalColor` interface whose concrete type is `lipgloss.Color` (a `string`-backed type implementing `fmt.Stringer`). Comparing it directly to a `lipgloss.Color` value is simpler than the helper above — replace the last test with the simpler direct comparison shown in Step 4's real assertion below once `theme.go` exists; the helper is a placeholder for the "verify it fails" step only. (This gets corrected in Step 4.)
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `go test ./internal/ui/... -run TestNewThemeAppliesPrimaryAndSecondary -v`
-Expected: FAIL with a compile error (`NewTheme` still takes 0 args)
-
-- [ ] **Step 3: Replace `internal/ui/theme_test.go` with the corrected version**
-
-The `stringColor`/`colorStringer` workaround in Step 1 was unnecessary — `lipgloss.Color` already implements `fmt.Stringer`, so we can compare directly. Replace the whole file:
+`lipgloss.Style.GetForeground()` returns a `lipgloss.TerminalColor` interface whose concrete type is `lipgloss.Color` (a `string`-backed type), so comparing it directly to a `lipgloss.Color` value works with no helper needed.
 
 ```go
 // internal/ui/theme_test.go
@@ -681,7 +618,12 @@ func TestNewThemeAppliesPrimaryAndSecondary(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Rewrite `internal/ui/theme.go`**
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/ui/... -run TestNewThemeAppliesPrimaryAndSecondary -v`
+Expected: FAIL with a compile error (`NewTheme` still takes 0 args)
+
+- [ ] **Step 3: Rewrite `internal/ui/theme.go`**
 
 Replace the whole file:
 
@@ -832,7 +774,7 @@ func NewTheme(primary, secondary lipgloss.Color) Theme {
 }
 ```
 
-- [ ] **Step 5: Update the call site in `internal/ui/app.go`**
+- [ ] **Step 4: Update the call site in `internal/ui/app.go`**
 
 Find (line 94):
 
@@ -848,12 +790,12 @@ Replace with:
 
 (`lipgloss` is already imported in `app.go`.)
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 5: Run test to verify it passes**
 
 Run: `go build ./... && go test ./... -v`
 Expected: All packages PASS, build succeeds.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/ui/theme.go internal/ui/theme_test.go internal/ui/app.go
@@ -1434,6 +1376,8 @@ git commit -m "QueuePane: theme/loc as View() parameters, themed status words"
 package ui
 
 import (
+	"strings"
+
 	"github.com/bvanhorn/exfil/internal/config"
 	"github.com/bvanhorn/exfil/internal/i18n"
 )
@@ -1500,28 +1444,9 @@ func (hp *HostPickerPane) View(theme Theme, loc *i18n.Localizer) string {
 		lines = append(lines, line)
 	}
 
-	return joinLines(lines)
+	return strings.Join(lines, "\n")
 }
 ```
-
-Since `strings.Join` was the only use of `"strings"` in this file and it's still needed, keep the import — but to avoid a stray unused-import risk if refactored differently, just keep using `strings.Join` directly rather than inventing a `joinLines` helper. Replace the last line of `View()` with:
-
-```go
-	return strings.Join(lines, "\n")
-```
-
-and keep `"strings"` in the import block:
-
-```go
-import (
-	"strings"
-
-	"github.com/bvanhorn/exfil/internal/config"
-	"github.com/bvanhorn/exfil/internal/i18n"
-)
-```
-
-(There is no separate `joinLines` function — that name only appeared above as a slip; `strings.Join` is what's actually used, matching every other pane in this codebase.)
 
 - [ ] **Step 2: Update call sites in `internal/ui/app.go`**
 
@@ -2844,7 +2769,7 @@ git commit -m "Document lingo packs and Settings screen in README/CLAUDE.md"
 - Remaining hardcoded status/hint strings → Task 13
 - Manual verification + docs → Task 14
 
-**Placeholder scan:** No "TBD"/"TODO" in any task. Task 4's Step 1→Step 3 correction (the `stringColor` workaround being replaced) is a deliberate "write a naive test, then show the better version" teaching step, not a placeholder — both versions are complete, runnable code.
+**Placeholder scan:** No "TBD"/"TODO" in any task.
 
 **Type consistency check:**
 - `NewTheme(primary, secondary lipgloss.Color) Theme` — signature introduced in Task 4, used identically in Tasks 5, 12.
