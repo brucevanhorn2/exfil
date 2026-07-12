@@ -99,3 +99,29 @@ func TestBrowserPaneEmptyMessageHiddenOnceEntriesExist(t *testing.T) {
 		t.Errorf("EmptyMessage should not render once entries are present, got:\n%s", view)
 	}
 }
+
+// TestBrowserPaneFocusUsesVividGradientUnfocusedUsesMuted is a regression
+// test for the visual-effects feature: a focused pane's border/title must
+// render with the full-intensity primary/secondary gradient, and an
+// unfocused pane with the muted (50%-toward-black) variant — proving the
+// two are visually distinguishable, not just structurally different.
+func TestBrowserPaneFocusUsesVividGradientUnfocusedUsesMuted(t *testing.T) {
+	theme := NewTheme(lipgloss.Color("#ff0000"), lipgloss.Color("#0000ff"))
+
+	b := NewBrowserPane("test", fsys.LocalFS{})
+	b.Width = 30
+	b.Height = 10
+
+	b.Focus = false
+	unfocused := b.View(theme)
+	vividRed := "38;2;255;0;0"
+	if strings.Contains(unfocused, vividRed) {
+		t.Errorf("unfocused pane should not use the vivid primary color, got:\n%s", unfocused)
+	}
+
+	b.Focus = true
+	focused := b.View(theme)
+	if !strings.Contains(focused, vividRed) {
+		t.Errorf("focused pane's title/border should include the vivid primary color, got:\n%s", focused)
+	}
+}
