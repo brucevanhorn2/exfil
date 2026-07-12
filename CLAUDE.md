@@ -16,13 +16,14 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ Transfer queue pane with a capped height (shows the most recent transfers; never grows the layout past the terminal)
 - ✅ Cyberpunk theming; both browser panes force-fill their assigned width/height
 - ✅ About screen (`?`) — ASCII logo, version (via `git describe`, injected by `make build`), license
+- ✅ Selectable lingo packs (`internal/i18n`) and free-form hex theme colors, via a dedicated Settings screen (`S`)
+- ✅ Remote pane stays empty (with a "press `s` to connect" hint) until a real SSH connection is made — never defaults to browsing the local filesystem in normal use; `-t` opts back into that for local-to-local test transfers
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
 
 **What's genuinely left** (not urgent, not blocking normal use):
 - Directory copy (currently shows "not supported")
 - Delete / rename / mkdir / view-edit operations
 - Multi-host sessions (one SSH connection at a time)
-- Destination pane doesn't auto-refresh after a transfer completes (navigate away and back)
 - Transfer cancellation (Ctrl+C kills the whole app, partial files left on disk)
 - Only one test file exists (`internal/transfer/copy_smoke_test.go`); UI logic (host form validation, path navigation) is undertested
 
@@ -44,15 +45,17 @@ Both panes implement the same `fsys.FileSystem` interface. This eliminates code 
 - `Open/Create` → io.ReadCloser / io.WriteCloser
 - `Stat(path)` → single Entry
 
-The remote pane defaults to a `LocalFS` rooted at `/` until an SSH connection is made (both panes get an initial `Refresh()` in `Model.Init()`), which is what makes local-to-local testing possible without a live host — see README's "Testing locally" section.
+Outside `-t` test mode, the remote pane's `FS`/`Cwd` are never read before a real SSH connection: `Model.Init()` skips its `Refresh()`, `View()` shows `BrowserPane.EmptyMessage` instead of a listing, and `enqueueCopyDirection` refuses any transfer touching the remote pane while `!m.connected`. This prevents the remote pane from ever being mistaken for a live host. With `-t` (`Model.testMode`), it behaves as a `LocalFS` rooted at `/` from startup, which is what makes local-to-local testing possible without a live host — see README's "Testing locally" section.
 
 ### Transfer progress
 
 `ProgressWriter` wraps `io.Writer`, throttles to ~6 msgs/sec, emits `TransferProgressMsg`. This keeps `eventsCh` from flooding on fast copies.
 
+`Model.transferDest` maps each in-flight transfer ID to which pane ("local"/"remote") it's copying into. `TransferDoneMsg` looks up the destination pane and re-lists whatever directory it currently shows, so a completed transfer appears without navigating away and back. The entry is removed on both `TransferDoneMsg` and `TransferErrorMsg`.
+
 ### Screen state machine (`internal/ui/app.go`)
 
-`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, and `ScreenAbout`. Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
+`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, `ScreenAbout`, and `ScreenSettings`. Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
 
 The browsing screen keeps a **persistent hint bar** (key bindings) separate from `m.statusMsg` (transient messages like "Connected to..." or errors) — don't let transient status overwrite the hints; they're rendered as two separate lines in `View()`.
 
@@ -67,6 +70,10 @@ Located at `~/.config/exfil/hosts.yaml`. Loaded via `config.Load()`, saved via `
 2. Fallback identity files in `~/.ssh`: `id_ed25519`, `id_rsa`, `id_ecdsa` (in that order)
 
 No password/passphrase prompts.
+
+### Lingo packs (`internal/i18n`)
+
+Every user-facing string goes through `loc.T("message_id", args...)` rather than being hardcoded. Four packs — `plain`, `secretsquirrel`, `keyboardcowboy`, `corposlut` — live as embedded YAML catalogs in `internal/i18n/locales/`. `Localizer.T` falls back to `plain` for any key missing from the active pack, then to the raw message ID if even `plain` doesn't have it. Panes don't store `Theme`/`Localizer` at construction — `View()` takes them as parameters — so a Settings-screen change re-themes the whole app immediately without reconstructing anything.
 
 ### Versioning
 
@@ -87,10 +94,11 @@ make build
 ./exfil
 ```
 
-To test transfers without SSH (remote pane defaults to local filesystem at `/`):
+To test transfers without SSH, pass `-t` (remote pane then defaults to local filesystem at `/` instead of showing the disconnected placeholder):
 ```bash
 mkdir -p /tmp/exfil-test/{a,b}
 echo hi > /tmp/exfil-test/a/file.txt
+./exfil -t
 # Navigate local pane to /tmp/exfil-test/a, remote pane to /tmp/exfil-test/b
 # Select file.txt, press '→' to copy it across
 ```
@@ -114,4 +122,3 @@ CI runs `go build`, `go vet`, and a `gofmt` check on every push to `master`.
 - Mouse support for pane clicking
 - Search/filter files
 - Stat view (permissions, owner, timestamps)
-- Auto-refresh the destination pane after a transfer completes

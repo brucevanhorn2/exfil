@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/bvanhorn/exfil/internal/config"
+	"github.com/bvanhorn/exfil/internal/i18n"
 )
 
 type HostPickerPane struct {
@@ -12,13 +13,11 @@ type HostPickerPane struct {
 	Focus  bool
 	Width  int
 	Height int
-	theme  Theme
 }
 
-func NewHostPickerPane(theme Theme) *HostPickerPane {
+func NewHostPickerPane() *HostPickerPane {
 	return &HostPickerPane{
 		Hosts: []config.Host{},
-		theme: theme,
 	}
 }
 
@@ -50,21 +49,21 @@ func (hp *HostPickerPane) CurrentHost() *config.Host {
 	return &hp.Hosts[hp.Cursor]
 }
 
-func (hp *HostPickerPane) View() string {
+func (hp *HostPickerPane) View(theme Theme, loc *i18n.Localizer) string {
 	if len(hp.Hosts) == 0 {
-		return hp.theme.PaneTitle.Render(" No hosts configured. Press [n] to add a host. ")
+		return theme.PaneTitle.Render(loc.T("hostpicker_empty"))
 	}
 
 	lines := []string{
-		hp.theme.PaneTitle.Render(" Saved Hosts - [↑/↓] navigate, [↵] connect, [n] add, [e] edit "),
+		theme.PaneTitle.Render(loc.T("hostpicker_header")),
 	}
 
 	for i, host := range hp.Hosts {
 		prefix := "  "
-		style := hp.theme.BrowserFile
+		style := theme.BrowserFile
 		if i == hp.Cursor {
 			prefix = "► "
-			style = hp.theme.BrowserDir
+			style = theme.BrowserDir
 		}
 		line := prefix + style.Render(host.Name) + " (" + host.User + "@" + host.Hostname + ")"
 		lines = append(lines, line)

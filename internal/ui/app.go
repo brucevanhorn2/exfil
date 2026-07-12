@@ -1,14 +1,15 @@
 package ui
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/user"
 	"sort"
+	"sync"
 
 	"github.com/bvanhorn/exfil/internal/config"
 	"github.com/bvanhorn/exfil/internal/fsys"
+	"github.com/bvanhorn/exfil/internal/i18n"
 	"github.com/bvanhorn/exfil/internal/sshclient"
 	"github.com/bvanhorn/exfil/internal/transfer"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -25,6 +26,7 @@ const (
 	ScreenHostPicker Screen = "hostpicker"
 	ScreenAddHost    Screen = "addhost"
 	ScreenAbout      Screen = "about"
+	ScreenSettings   Screen = "settings"
 )
 
 // Messages
@@ -59,21 +61,34 @@ type transferErrorMsg struct {
 
 // Model is the root bubbletea model
 type Model struct {
-	width      int
-	height     int
-	screen     Screen
-	theme      Theme
-	localPane  *BrowserPane
-	remotePane *BrowserPane
-	hostPicker *HostPickerPane
-	hostForm   *HostFormPane
-	aboutPane  *AboutPane
-	queuePane  *QueuePane
-	statusMsg  string
-	nextID     int
-	eventsCh   chan tea.Msg
-	jobsCh     chan transfer.Job
-	logger     *log.Logger
+	width             int
+	height            int
+	screen            Screen
+	theme             Theme
+	loc               *i18n.Localizer
+	primaryColorHex   string
+	secondaryColorHex string
+	localPane         *BrowserPane
+	remotePane        *BrowserPane
+	hostPicker        *HostPickerPane
+	hostForm          *HostFormPane
+	aboutPane         *AboutPane
+	settingsPane      *SettingsPane
+	queuePane         *QueuePane
+	statusMsg         string
+	nextID            int
+	// transferDest maps an in-flight transfer's ID to which pane ("local" or
+	// "remote") it's copying into, so TransferDoneMsg knows which pane to
+	// refresh. Entries are removed once the transfer finishes or errors.
+	// Written from enqueueCopyDirection's tea.Cmd goroutine and read/deleted
+	// from Update()'s goroutine, so access must go through transferDestMu —
+	// a plain map write racing a map read/delete is a fatal Go runtime
+	// error, not just a benign data race.
+	transferDest   map[int]string
+	transferDestMu sync.Mutex
+	eventsCh       chan tea.Msg
+	jobsCh         chan transfer.Job
+	logger         *log.Logger
 
 	// SSH connection state. Held so we can close cleanly and so the remote
 	// pane's RemoteFS shares the single sftp client (safe for concurrent use).
@@ -84,43 +99,92 @@ type Model struct {
 	// connecting is true while an SSH dial is in flight; drives the spinner.
 	spinner    spinner.Model
 	connecting bool
+
+	// testMode (the -t CLI flag) shows the local filesystem in the remote
+	// pane too, without a real connection — for local-to-local transfer
+	// testing. Outside test mode, the remote pane stays empty (no
+	// navigation, no transfers) until a real SSH connection is made, so it
+	// never gets mistaken for a live remote host.
+	testMode bool
 }
 
-func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logger) *Model {
+func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logger, testMode bool) *Model {
 	if logger == nil {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	theme := NewTheme()
 	localFS := fsys.LocalFS{}
 	home, _ := localFS.Home()
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Printf("failed to load hosts.yaml for lingo/theme settings: %v", err)
+		cfg = &config.Config{}
+	}
+
+	lingo := cfg.Lingo
+	if lingo == "" {
+		lingo = "plain"
+	}
+	loc := i18n.NewLocalizer(lingo)
+
+	primaryColorHex := cfg.PrimaryColor
+	if primaryColorHex == "" {
+		primaryColorHex = DefaultPrimaryColor
+	}
+	primaryColor, err := parseHexColor(primaryColorHex)
+	if err != nil {
+		logger.Printf("invalid primary_color %q in hosts.yaml, using default: %v", primaryColorHex, err)
+		primaryColorHex = DefaultPrimaryColor
+		primaryColor = lipgloss.Color(DefaultPrimaryColor)
+	}
+
+	secondaryColorHex := cfg.SecondaryColor
+	if secondaryColorHex == "" {
+		secondaryColorHex = DefaultSecondaryColor
+	}
+	secondaryColor, err := parseHexColor(secondaryColorHex)
+	if err != nil {
+		logger.Printf("invalid secondary_color %q in hosts.yaml, using default: %v", secondaryColorHex, err)
+		secondaryColorHex = DefaultSecondaryColor
+		secondaryColor = lipgloss.Color(DefaultSecondaryColor)
+	}
+
+	theme := NewTheme(primaryColor, secondaryColor)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = theme.PaneTitleFocus
 
-	hostPicker := NewHostPickerPane(theme)
+	hostPicker := NewHostPickerPane()
 	if err := hostPicker.Load(); err != nil {
 		logger.Printf("failed to load hosts.yaml: %v", err)
 	}
-	hostForm := NewHostFormPane(theme)
-	aboutPane := NewAboutPane(theme)
+	hostForm := NewHostFormPane()
+	aboutPane := NewAboutPane()
+	settingsPane := NewSettingsPane()
 
 	m := &Model{
-		screen:     ScreenBrowsing,
-		theme:      theme,
-		eventsCh:   eventsCh,
-		jobsCh:     jobsCh,
-		logger:     logger,
-		localPane:  NewBrowserPane("local", localFS, theme),
-		remotePane: NewBrowserPane("remote", fsys.LocalFS{}, theme),
-		hostPicker: hostPicker,
-		hostForm:   hostForm,
-		aboutPane:  aboutPane,
-		queuePane:  NewQueuePane(theme),
-		spinner:    sp,
-		statusMsg:  "Ready.",
-		nextID:     1,
+		screen:            ScreenBrowsing,
+		theme:             theme,
+		loc:               loc,
+		primaryColorHex:   primaryColorHex,
+		secondaryColorHex: secondaryColorHex,
+		eventsCh:          eventsCh,
+		jobsCh:            jobsCh,
+		logger:            logger,
+		localPane:         NewBrowserPane("local", localFS),
+		remotePane:        NewBrowserPane("remote", fsys.LocalFS{}),
+		hostPicker:        hostPicker,
+		hostForm:          hostForm,
+		aboutPane:         aboutPane,
+		settingsPane:      settingsPane,
+		queuePane:         NewQueuePane(),
+		spinner:           sp,
+		statusMsg:         loc.T("status_ready"),
+		nextID:            1,
+		transferDest:      make(map[int]string),
+		testMode:          testMode,
 	}
 
 	m.localPane.Cwd = home
@@ -131,26 +195,33 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		func() tea.Msg {
 			if err := m.localPane.Refresh(); err != nil {
 				return readDirMsg{pane: "local", err: err}
 			}
 			return readDirMsg{pane: "local", entries: m.localPane.Entries}
 		},
-		func() tea.Msg {
-			// Refresh the remote pane too, even before an SSH connection is
-			// made: it defaults to a LocalFS rooted at "/", which lets both
-			// panes be used for local-to-local testing (see README). Once
-			// connected, sshConnectedMsg's readDirCmd overwrites this with
-			// the real remote listing.
+		waitForEvent(m.eventsCh),
+	}
+
+	if m.testMode {
+		// -t: refresh the remote pane too, even before an SSH connection is
+		// made — it defaults to a LocalFS rooted at "/", which lets both
+		// panes be used for local-to-local testing (see README). Once
+		// connected, sshConnectedMsg's readDirCmd overwrites this with the
+		// real remote listing. Outside test mode, the remote pane stays
+		// empty until a real connection is made (see handleBrowsingKey and
+		// View()), so it's never mistaken for a live remote host.
+		cmds = append(cmds, func() tea.Msg {
 			if err := m.remotePane.Refresh(); err != nil {
 				return readDirMsg{pane: "remote", err: err}
 			}
 			return readDirMsg{pane: "remote", entries: m.remotePane.Entries}
-		},
-		waitForEvent(m.eventsCh),
-	)
+		})
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -173,6 +244,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == ScreenAbout {
 			return m.handleAboutKey(msg)
 		}
+		if m.screen == ScreenSettings {
+			return m.handleSettingsKey(msg)
+		}
 		return m.handleBrowsingKey(msg)
 
 	case spinner.TickMsg:
@@ -188,7 +262,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sshConnectedMsg:
 		m.connecting = false
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Connection to %s failed: %v", msg.host.Name, msg.err)
+			m.statusMsg = m.loc.T("status_connection_failed", msg.host.Name, msg.err)
 			m.logger.Printf("ssh dial %s: %v", msg.host.Name, msg.err)
 			return m, nil
 		}
@@ -205,13 +279,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cwd, _ = rfs.Home()
 		}
 		m.remotePane.Cwd = cwd
-		m.statusMsg = fmt.Sprintf("Connected to %s@%s", msg.host.User, msg.host.Hostname)
+		m.statusMsg = m.loc.T("status_connected", msg.host.User, msg.host.Hostname)
 		// List the remote directory off the UI thread (network call).
 		return m, readDirCmd("remote", rfs, cwd)
 
 	case readDirMsg:
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Error reading dir: %v", msg.err)
+			m.statusMsg = m.loc.T("status_read_dir_error", msg.err)
 		}
 		if msg.pane == "local" {
 			m.localPane.SetEntries(msg.entries)
@@ -229,12 +303,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transfer.TransferDoneMsg:
 		// Transfer completed successfully.
 		m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
-		// TODO (M4): Refresh destination pane listing to show the new file
-		return m, waitForEvent(m.eventsCh)
+		dstName, ok := m.popTransferDest(msg.ID)
+		if !ok {
+			return m, waitForEvent(m.eventsCh)
+		}
+		dstPane := m.remotePane
+		if dstName == "local" {
+			dstPane = m.localPane
+		}
+		// Re-list whichever directory the destination pane currently shows,
+		// so the newly-arrived file appears without the user navigating
+		// away and back.
+		return m, tea.Batch(waitForEvent(m.eventsCh), readDirCmd(dstName, dstPane.FS, dstPane.Cwd))
 
 	case transfer.TransferErrorMsg:
 		// Transfer failed. Mark it as error and keep the error message visible.
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
+		m.popTransferDest(msg.ID)
 		return m, waitForEvent(m.eventsCh)
 	}
 
@@ -255,11 +340,14 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		// Open the Site Manager overlay to pick a host to connect to.
 		if err := m.hostPicker.Load(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error loading hosts: %v", err)
+			m.statusMsg = m.loc.T("status_hosts_load_error", err)
 		}
 		m.screen = ScreenHostPicker
 	case "?":
 		m.screen = ScreenAbout
+	case "S":
+		m.settingsPane.ResetFromConfig(m.loc.Pack(), m.primaryColorHex, m.secondaryColorHex)
+		m.screen = ScreenSettings
 	case "tab":
 		newLocalFocus := !m.localPane.Focus
 		m.localPane.SetFocus(newLocalFocus)
@@ -276,11 +364,11 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.enqueueCopyDirection(m.remotePane, m.localPane)
 	case "enter":
 		if err := active.Enter(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error: %v", err)
+			m.statusMsg = m.loc.T("error_prefix") + err.Error()
 		}
 	case "backspace":
 		if err := active.Back(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error: %v", err)
+			m.statusMsg = m.loc.T("error_prefix") + err.Error()
 		}
 	case " ":
 		active.ToggleSelect()
@@ -299,6 +387,81 @@ func (m *Model) handleAboutKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleSettingsKey handles keys in the Settings screen.
+func (m *Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Discard: rebuild the theme from the last persisted values.
+		m.applyTheme(m.primaryColorHex, m.secondaryColorHex)
+		m.screen = ScreenBrowsing
+		return m, nil
+	case "tab":
+		m.settingsPane.NextField()
+		return m, nil
+	case "shift+tab":
+		m.settingsPane.PrevField()
+		return m, nil
+	case "left":
+		if m.settingsPane.Focused() == settingsFieldLingo {
+			m.settingsPane.CyclePack(-1)
+			return m, nil
+		}
+	case "right":
+		if m.settingsPane.Focused() == settingsFieldLingo {
+			m.settingsPane.CyclePack(1)
+			return m, nil
+		}
+	case "enter":
+		if err := m.settingsPane.Validate(); err != nil {
+			// Error shown inline on the form; stay put.
+			return m, nil
+		}
+		m.loc.SetPack(m.settingsPane.CurrentPack())
+		m.primaryColorHex = m.settingsPane.PrimaryValue()
+		m.secondaryColorHex = m.settingsPane.SecondaryValue()
+		m.applyTheme(m.primaryColorHex, m.secondaryColorHex)
+
+		cfg, err := config.Load()
+		if err != nil {
+			// A genuine parse failure (not "file missing") means we don't
+			// know what's in hosts.yaml — saving here would overwrite it
+			// with only the new lingo/theme fields and silently drop the
+			// existing Hosts list. Abort instead, matching HostFormPane.Save().
+			m.statusMsg = m.loc.T("err_config_load", err)
+			m.screen = ScreenBrowsing
+			return m, nil
+		}
+		cfg.Lingo = m.loc.Pack()
+		cfg.PrimaryColor = m.primaryColorHex
+		cfg.SecondaryColor = m.secondaryColorHex
+		if err := cfg.Save(); err != nil {
+			m.statusMsg = m.loc.T("err_config_save", err)
+		}
+		m.screen = ScreenBrowsing
+		return m, nil
+	}
+	// Any other key (character input) goes to whichever color textinput is
+	// focused; a no-op if the Lingo Pack row is focused.
+	cmd := m.settingsPane.HandleKey(msg)
+	return m, cmd
+}
+
+// applyTheme rebuilds m.theme from the given hex colors. Both are assumed
+// already-valid (either defaults, previously-persisted values, or freshly
+// validated by SettingsPane.Validate), so parse errors here are unexpected
+// and fall back to the package defaults rather than crash.
+func (m *Model) applyTheme(primaryHex, secondaryHex string) {
+	primary, err := parseHexColor(primaryHex)
+	if err != nil {
+		primary = lipgloss.Color(DefaultPrimaryColor)
+	}
+	secondary, err := parseHexColor(secondaryHex)
+	if err != nil {
+		secondary = lipgloss.Color(DefaultSecondaryColor)
+	}
+	m.theme = NewTheme(primary, secondary)
+}
+
 // handleHostPickerKey handles keys in the Site Manager overlay.
 func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -314,7 +477,7 @@ func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		host := m.hostPicker.CurrentHost()
 		if host == nil {
-			m.statusMsg = "No host selected"
+			m.statusMsg = m.loc.T("status_no_host_selected")
 			return m, nil
 		}
 		m.hostForm.ResetForEdit(*host)
@@ -322,12 +485,12 @@ func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		host := m.hostPicker.CurrentHost()
 		if host == nil {
-			m.statusMsg = "No host selected"
+			m.statusMsg = m.loc.T("status_no_host_selected")
 			return m, nil
 		}
 		m.screen = ScreenBrowsing
 		m.connecting = true
-		m.statusMsg = fmt.Sprintf("Connecting to %s…", host.Name)
+		m.statusMsg = m.loc.T("status_connecting", host.Name)
 		return m, tea.Batch(m.connectSSH(*host), m.spinner.Tick)
 	}
 	return m, nil
@@ -346,15 +509,15 @@ func (m *Model) handleHostFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hostForm.PrevField()
 		return m, nil
 	case "enter":
-		host, err := m.hostForm.Save()
+		host, err := m.hostForm.Save(m.loc)
 		if err != nil {
 			// Validation/save error is shown inline on the form; stay put.
 			return m, nil
 		}
 		if err := m.hostPicker.Load(); err != nil {
-			m.statusMsg = fmt.Sprintf("Error reloading hosts: %v", err)
+			m.statusMsg = m.loc.T("status_hosts_load_error", err)
 		}
-		m.statusMsg = fmt.Sprintf("Saved host %q", host.Name)
+		m.statusMsg = m.loc.T("status_host_saved", host.Name)
 		m.screen = ScreenHostPicker
 		return m, nil
 	}
@@ -434,23 +597,42 @@ func (m *Model) View() string {
 	m.aboutPane.Width = m.width - 4
 	m.aboutPane.Height = m.height - queueHeight - 2
 
-	localView := m.localPane.View()
-	remoteView := m.remotePane.View()
+	if m.connected || m.testMode {
+		m.remotePane.EmptyMessage = ""
+	} else {
+		m.remotePane.EmptyMessage = m.loc.T("hint_remote_disconnected")
+	}
+
+	localView := m.localPane.View(m.theme)
+	remoteView := m.remotePane.View(m.theme)
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, localView, remoteView)
 
-	queueView := m.queuePane.View()
+	queueView := m.queuePane.View(m.theme, m.loc)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, panes, queueView)
 
 	// The Site Manager is a modal overlay: when active, it replaces the
 	// dual-pane content area.
 	if m.screen == ScreenHostPicker {
-		content = m.hostPicker.View()
+		content = m.hostPicker.View(m.theme, m.loc)
 	} else if m.screen == ScreenAddHost {
-		content = m.hostForm.View()
+		content = m.hostForm.View(m.theme, m.loc)
 	} else if m.screen == ScreenAbout {
-		content = m.aboutPane.View()
+		content = m.aboutPane.View(m.theme, m.loc)
+	} else if m.screen == ScreenSettings {
+		previewPrimary, previewSecondary := m.settingsPane.PreviewColors(m.primaryColorHex, m.secondaryColorHex)
+		primary, err := parseHexColor(previewPrimary)
+		if err != nil {
+			primary = lipgloss.Color(DefaultPrimaryColor)
+		}
+		secondary, err := parseHexColor(previewSecondary)
+		if err != nil {
+			secondary = lipgloss.Color(DefaultSecondaryColor)
+		}
+		previewTheme := NewTheme(primary, secondary)
+		previewLoc := i18n.NewLocalizer(m.settingsPane.CurrentPack())
+		content = m.settingsPane.View(previewTheme, previewLoc)
 	}
 
 	status := m.statusMsg
@@ -466,9 +648,7 @@ func (m *Model) View() string {
 	// them. The host picker/form screens embed their own hints in their
 	// title, so only the transient status line applies there.
 	if m.screen == ScreenBrowsing {
-		hintsBar := m.theme.StatusBar.Render(
-			"[Tab] switch pane  [↑/↓] nav  [→] push→remote  [←] pull←local  [↵] enter  [⌫] back  [space] select  [s] hosts  [?] about  [q] quit",
-		)
+		hintsBar := m.theme.StatusBar.Render(m.loc.T("hint_bar"))
 		footer = lipgloss.JoinVertical(lipgloss.Left, footer, hintsBar)
 	}
 
@@ -490,6 +670,11 @@ func (m *Model) enqueueCopy() tea.Cmd {
 // file travels: Right pushes local → remote, Left pulls remote → local.
 func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 	return func() tea.Msg {
+		if (srcPane == m.remotePane || dstPane == m.remotePane) && !m.connected && !m.testMode {
+			m.statusMsg = m.loc.T("status_not_connected")
+			return nil
+		}
+
 		files := srcPane.GetSelectedFiles()
 		if len(files) == 0 {
 			if entry := srcPane.CurrentFile(); entry != nil {
@@ -498,8 +683,13 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 		}
 
 		if len(files) == 0 {
-			m.statusMsg = "No files selected"
+			m.statusMsg = m.loc.T("status_no_files_selected")
 			return nil
+		}
+
+		dstName := "remote"
+		if dstPane == m.localPane {
+			dstName = "local"
 		}
 
 		for _, filename := range files {
@@ -512,12 +702,13 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			}
 
 			if entry.IsDir {
-				m.statusMsg = "Directories not supported"
+				m.statusMsg = m.loc.T("status_dir_not_supported")
 				continue
 			}
 
 			id := m.nextID
 			m.nextID++
+			m.setTransferDest(id, dstName)
 
 			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
 			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)
@@ -545,6 +736,25 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 
 		return nil
 	}
+}
+
+// setTransferDest and popTransferDest guard m.transferDest with a mutex:
+// setTransferDest is called from enqueueCopyDirection's tea.Cmd goroutine,
+// popTransferDest from Update()'s goroutine, and a plain map has no built-in
+// protection against that — Go's runtime treats a concurrent map
+// write/read as a fatal, unrecoverable error rather than a benign race.
+func (m *Model) setTransferDest(id int, dstName string) {
+	m.transferDestMu.Lock()
+	defer m.transferDestMu.Unlock()
+	m.transferDest[id] = dstName
+}
+
+func (m *Model) popTransferDest(id int) (string, bool) {
+	m.transferDestMu.Lock()
+	defer m.transferDestMu.Unlock()
+	dstName, ok := m.transferDest[id]
+	delete(m.transferDest, id)
+	return dstName, ok
 }
 
 // waitForEvent is the "subscription" pattern in bubbletea.

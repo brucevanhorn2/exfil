@@ -17,7 +17,10 @@ type Host struct {
 }
 
 type Config struct {
-	Hosts []Host `yaml:"hosts"`
+	Hosts          []Host `yaml:"hosts"`
+	Lingo          string `yaml:"lingo,omitempty"`
+	PrimaryColor   string `yaml:"primary_color,omitempty"`
+	SecondaryColor string `yaml:"secondary_color,omitempty"`
 }
 
 func DefaultPort() int { return 22 }

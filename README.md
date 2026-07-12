@@ -27,6 +27,7 @@ Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue,
 - ✅ Live progress reporting with speed calculation
 - ✅ Cyberpunk theming (dark, magenta/cyan/green accents), panes fill the full terminal
 - ✅ About screen (`?`) — logo, version, license
+- ✅ Selectable lingo packs (plain/secretsquirrel/keyboardcowboy/corposlut) and free-form hex theme colors via the Settings screen (`S`)
 - ⏳ Directory copy support
 - ⏳ Delete/rename/mkdir operations
 - ⏳ Multi-host sessions (currently one SSH connection at a time)
@@ -55,6 +56,7 @@ Controls:
 - **→** — push selected file(s) from local to remote
 - **←** — pull selected file(s) from remote to local
 - **s** — open the Site Manager (connect to a saved host; `n` to add, `e` to edit)
+- **S** — Settings (lingo pack, theme colors)
 - **?** — about screen
 - **q** — quit
 
@@ -109,11 +111,12 @@ Hosts are stored in `~/.config/exfil/hosts.yaml` (YAML, supports comments). You 
 
 ## Testing locally
 
-The remote pane defaults to browsing the local filesystem (rooted at `/`) until you connect to a host, so you can test transfers without SSH:
+Without a connection, the remote pane is empty (a "press `s` to select a host" message) so it's never mistaken for a live remote host. Pass `-t` to instead browse the local filesystem (rooted at `/`) in both panes, so you can test transfers without SSH:
 
 ```bash
 mkdir -p /tmp/exfil-test/{a,b}
 echo "test content" > /tmp/exfil-test/a/file1.txt
+./exfil -t
 # In the app, navigate the local (left) pane to /tmp/exfil-test/a
 # Navigate the remote (right) pane to /tmp/exfil-test/b
 # Select file1.txt in the left pane, press '→' to copy it to the right

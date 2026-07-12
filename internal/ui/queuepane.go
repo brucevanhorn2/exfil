@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bvanhorn/exfil/internal/i18n"
 	"github.com/charmbracelet/bubbles/progress"
 )
 
@@ -30,13 +31,11 @@ type QueuePane struct {
 	Transfers []Transfer
 	Height    int
 	Width     int
-	theme     Theme
 }
 
-func NewQueuePane(theme Theme) *QueuePane {
+func NewQueuePane() *QueuePane {
 	return &QueuePane{
 		Transfers: []Transfer{},
-		theme:     theme,
 	}
 }
 
@@ -57,9 +56,9 @@ func (q *QueuePane) UpdateTransfer(id int, status TransferStatus, done, total in
 	}
 }
 
-func (q *QueuePane) View() string {
-	title := q.theme.QueueTitle.Render(" Transfer Queue ")
-	border := q.theme.QueueBorder
+func (q *QueuePane) View(theme Theme, loc *i18n.Localizer) string {
+	title := theme.QueueTitle.Render(loc.T("screen_title_queue"))
+	border := theme.QueueBorder
 
 	// -2 for the border's top/bottom lines, -1 for the title line above.
 	maxRows := q.Height - 3
@@ -80,11 +79,11 @@ func (q *QueuePane) View() string {
 	rowsRendered := 0
 
 	if len(transfers) == 0 {
-		lines = append(lines, "  No transfers")
+		lines = append(lines, loc.T("queue_empty"))
 		rowsRendered++
 	} else {
 		for _, t := range transfers {
-			lines = append(lines, q.renderTransfer(t))
+			lines = append(lines, q.renderTransfer(t, theme, loc))
 			rowsRendered++
 		}
 	}
@@ -97,23 +96,23 @@ func (q *QueuePane) View() string {
 	return border.Width(q.Width).Render(content)
 }
 
-func (q *QueuePane) renderTransfer(t Transfer) string {
-	statusStr := ""
-	statusStyle := q.theme.TransferQueued
+func (q *QueuePane) renderTransfer(t Transfer, theme Theme, loc *i18n.Localizer) string {
+	var statusKey string
+	statusStyle := theme.TransferQueued
 
 	switch t.Status {
 	case StatusQueued:
-		statusStr = "⏳ Q"
-		statusStyle = q.theme.TransferQueued
+		statusKey = "transfer_status_queued"
+		statusStyle = theme.TransferQueued
 	case StatusRunning:
-		statusStr = "▶ ▶"
-		statusStyle = q.theme.TransferRunning
+		statusKey = "transfer_status_running"
+		statusStyle = theme.TransferRunning
 	case StatusDone:
-		statusStr = "✓ ✓"
-		statusStyle = q.theme.TransferDone
+		statusKey = "transfer_status_done"
+		statusStyle = theme.TransferDone
 	case StatusError:
-		statusStr = "✗ ✗"
-		statusStyle = q.theme.TransferError
+		statusKey = "transfer_status_error"
+		statusStyle = theme.TransferError
 	}
 
 	nameWidth := 20
@@ -122,7 +121,7 @@ func (q *QueuePane) renderTransfer(t Transfer) string {
 	}
 
 	name := fmt.Sprintf("%-"+fmt.Sprint(nameWidth)+"s", t.Filename)
-	status := statusStyle.Render(statusStr)
+	status := statusStyle.Render(fmt.Sprintf("%-10s", loc.T(statusKey)))
 
 	var progressView string
 	if t.Total > 0 {
@@ -141,7 +140,7 @@ func (q *QueuePane) renderTransfer(t Transfer) string {
 	line := fmt.Sprintf("%s %s %s %s %s", status, name, progressView, sizeStr, t.Speed)
 
 	if t.Error != "" {
-		line = q.theme.TransferError.Render(line + " (" + t.Error + ")")
+		line = theme.TransferError.Render(line + " (" + t.Error + ")")
 	}
 
 	return line

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"os"
 
@@ -10,6 +11,9 @@ import (
 )
 
 func main() {
+	testMode := flag.Bool("t", false, "test mode: show the local filesystem in both panes without an SSH connection, for local-to-local transfer testing")
+	flag.Parse()
+
 	f, err := os.OpenFile("/tmp/exfil.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("failed to open log: %v", err)
@@ -31,7 +35,7 @@ func main() {
 	transfer.StartWorkers(3, jobsCh, eventsCh)
 
 	// Pass both channels to the UI model.
-	model := ui.NewModel(eventsCh, jobsCh, logger)
+	model := ui.NewModel(eventsCh, jobsCh, logger, *testMode)
 
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 

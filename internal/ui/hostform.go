@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bvanhorn/exfil/internal/config"
+	"github.com/bvanhorn/exfil/internal/i18n"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -30,12 +31,11 @@ type HostFormPane struct {
 	editingName string // original Name of the host being edited; empty when adding
 	isEditing   bool
 	errMsg      string
-	theme       Theme
 	Width       int
 	Height      int
 }
 
-func NewHostFormPane(theme Theme) *HostFormPane {
+func NewHostFormPane() *HostFormPane {
 	labels := map[hostFormField]string{
 		fieldName:       "Name",
 		fieldHostname:   "Hostname",
@@ -55,7 +55,6 @@ func NewHostFormPane(theme Theme) *HostFormPane {
 
 	return &HostFormPane{
 		inputs: inputs,
-		theme:  theme,
 	}
 }
 
@@ -128,7 +127,7 @@ func (hf *HostFormPane) HandleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // buildHost validates the form fields and returns the resulting Host.
-func (hf *HostFormPane) buildHost() (config.Host, error) {
+func (hf *HostFormPane) buildHost(loc *i18n.Localizer) (config.Host, error) {
 	name := strings.TrimSpace(hf.inputs[fieldName].Value())
 	hostname := strings.TrimSpace(hf.inputs[fieldHostname].Value())
 	user := strings.TrimSpace(hf.inputs[fieldUser].Value())
@@ -136,20 +135,20 @@ func (hf *HostFormPane) buildHost() (config.Host, error) {
 	remotePath := strings.TrimSpace(hf.inputs[fieldRemotePath].Value())
 
 	if name == "" {
-		return config.Host{}, fmt.Errorf("name is required")
+		return config.Host{}, fmt.Errorf("%s", loc.T("err_name_required"))
 	}
 	if hostname == "" {
-		return config.Host{}, fmt.Errorf("hostname is required")
+		return config.Host{}, fmt.Errorf("%s", loc.T("err_hostname_required"))
 	}
 	if user == "" {
-		return config.Host{}, fmt.Errorf("user is required")
+		return config.Host{}, fmt.Errorf("%s", loc.T("err_user_required"))
 	}
 
 	port := config.DefaultPort()
 	if portStr != "" {
 		p, err := strconv.Atoi(portStr)
 		if err != nil || p <= 0 || p > 65535 {
-			return config.Host{}, fmt.Errorf("port must be a number between 1 and 65535")
+			return config.Host{}, fmt.Errorf("%s", loc.T("err_port_invalid"))
 		}
 		port = p
 	}
@@ -165,8 +164,8 @@ func (hf *HostFormPane) buildHost() (config.Host, error) {
 
 // Save validates the form, then loads hosts.yaml, adds or updates the host,
 // and writes it back. Returns the saved host on success.
-func (hf *HostFormPane) Save() (config.Host, error) {
-	host, err := hf.buildHost()
+func (hf *HostFormPane) Save(loc *i18n.Localizer) (config.Host, error) {
+	host, err := hf.buildHost(loc)
 	if err != nil {
 		hf.errMsg = err.Error()
 		return config.Host{}, err
@@ -174,7 +173,7 @@ func (hf *HostFormPane) Save() (config.Host, error) {
 
 	cfg, err := config.Load()
 	if err != nil {
-		hf.errMsg = fmt.Sprintf("failed to load hosts.yaml: %v", err)
+		hf.errMsg = loc.T("err_config_load", err)
 		return config.Host{}, err
 	}
 
@@ -193,7 +192,7 @@ func (hf *HostFormPane) Save() (config.Host, error) {
 	}
 
 	if err := cfg.Save(); err != nil {
-		hf.errMsg = fmt.Sprintf("failed to save hosts.yaml: %v", err)
+		hf.errMsg = loc.T("err_config_save", err)
 		return config.Host{}, err
 	}
 
@@ -201,30 +200,30 @@ func (hf *HostFormPane) Save() (config.Host, error) {
 	return host, nil
 }
 
-func (hf *HostFormPane) View() string {
-	labels := []string{"Name", "Hostname", "Port", "User", "Remote Path"}
+func (hf *HostFormPane) View(theme Theme, loc *i18n.Localizer) string {
+	labelKeys := []string{"host_label_name", "host_label_hostname", "host_label_port", "host_label_user", "host_label_remotepath"}
 
-	title := "Add Host"
+	header := loc.T("hostform_header_add")
 	if hf.IsEditing() {
-		title = "Edit Host"
+		header = loc.T("hostform_header_edit")
 	}
 
 	lines := []string{
-		hf.theme.PaneTitle.Render(fmt.Sprintf(" %s - [Tab/Shift+Tab] move  [Enter] save  [Esc] cancel ", title)),
+		theme.PaneTitle.Render(header),
 		"",
 	}
 
 	for f := hostFormField(0); f < fieldCount; f++ {
-		labelStyle := hf.theme.BrowserFile
+		labelStyle := theme.BrowserFile
 		if f == hf.focused {
-			labelStyle = hf.theme.BrowserDir
+			labelStyle = theme.BrowserDir
 		}
-		label := labelStyle.Render(fmt.Sprintf("%-12s", labels[f]))
+		label := labelStyle.Render(fmt.Sprintf("%-12s", loc.T(labelKeys[f])))
 		lines = append(lines, label+" "+hf.inputs[f].View())
 	}
 
 	if hf.errMsg != "" {
-		lines = append(lines, "", hf.theme.StatusError.Render("Error: "+hf.errMsg))
+		lines = append(lines, "", theme.StatusError.Render(loc.T("error_prefix")+hf.errMsg))
 	}
 
 	return strings.Join(lines, "\n")
