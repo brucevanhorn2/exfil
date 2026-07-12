@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bvanhorn/exfil/internal/i18n"
 	"github.com/bvanhorn/exfil/internal/version"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -34,13 +35,12 @@ const (
 )
 
 type AboutPane struct {
-	theme  Theme
 	Width  int
 	Height int
 }
 
-func NewAboutPane(theme Theme) *AboutPane {
-	return &AboutPane{theme: theme}
+func NewAboutPane() *AboutPane {
+	return &AboutPane{}
 }
 
 // gradientLogo renders text with a horizontal color gradient from `from` to
@@ -89,19 +89,19 @@ func lerp(a, b int, t float64) int {
 	return int(float64(a) + t*float64(b-a))
 }
 
-func (a *AboutPane) View() string {
+func (a *AboutPane) View(theme Theme, loc *i18n.Localizer) string {
 	lines := []string{
 		gradientLogo(logo, logoFrom, logoTo),
 		"",
-		a.theme.BrowserFile.Render("cyberpunk TUI SCP/SFTP client"),
+		theme.BrowserFile.Render(loc.T("about_tagline")),
 		"",
-		a.theme.BrowserDir.Render("Version:  ") + version.Version,
-		a.theme.BrowserDir.Render("License:  ") + "MIT",
-		a.theme.BrowserDir.Render("Source:   ") + "github.com/brucevanhorn2/exfil",
+		theme.BrowserDir.Render(fmt.Sprintf("%-10s", loc.T("about_label_version"))) + version.Version,
+		theme.BrowserDir.Render(fmt.Sprintf("%-10s", loc.T("about_label_license"))) + "MIT",
+		theme.BrowserDir.Render(fmt.Sprintf("%-10s", loc.T("about_label_source"))) + "github.com/brucevanhorn2/exfil",
 		"",
-		a.theme.PaneTitle.Render("[Esc/q] close"),
+		theme.PaneTitle.Render(loc.T("about_close_hint")),
 	}
 
 	content := strings.Join(lines, "\n")
-	return a.theme.PaneBorderFocus.Width(a.Width).Height(a.Height).Render(content)
+	return theme.PaneBorderFocus.Width(a.Width).Height(a.Height).Render(content)
 }

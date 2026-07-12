@@ -143,7 +143,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		logger.Printf("failed to load hosts.yaml: %v", err)
 	}
 	hostForm := NewHostFormPane()
-	aboutPane := NewAboutPane(theme)
+	aboutPane := NewAboutPane()
 
 	m := &Model{
 		screen:            ScreenBrowsing,
@@ -492,7 +492,7 @@ func (m *Model) View() string {
 	} else if m.screen == ScreenAddHost {
 		content = m.hostForm.View(m.theme, m.loc)
 	} else if m.screen == ScreenAbout {
-		content = m.aboutPane.View()
+		content = m.aboutPane.View(m.theme, m.loc)
 	}
 
 	status := m.statusMsg
