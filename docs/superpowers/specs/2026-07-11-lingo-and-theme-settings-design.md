@@ -115,7 +115,7 @@ Three rows:
 Interaction:
 - `Tab`/`Shift+Tab` moves between the three rows (same convention as the host form)
 - `←`/`→` only cycles the pack when the **Lingo Pack** row is focused; on the two color rows, `←`/`→` are normal `textinput` cursor movement within the hex text — they don't cycle anything
-- Live preview: as soon as a color field's text matches `^#[0-9A-Fa-f]{6}$`, the in-memory `m.theme` is rebuilt immediately so the whole app re-themes live; while the text is incomplete/invalid, the preview holds the last valid color rather than flickering/erroring
+- Live preview: scoped to the Settings screen's own rendering only, not the whole app — `m.theme`/`m.loc` aren't mutated until `Enter` saves. As soon as a color field's text matches `^#[0-9A-Fa-f]{6}$`, the Settings screen re-renders with that color; while the text is incomplete/invalid, the preview holds the last valid color rather than flickering/erroring. Likewise, cycling the Lingo Pack row immediately re-renders the Settings screen (title, labels, hint) in the newly-selected pack, without touching the browsing screen underneath
 - `Enter` saves: re-validates both hex fields (invalid shows an inline error, same pattern as `HostFormPane.errMsg`, and does not close the screen), then persists `Lingo`/`PrimaryColor`/`SecondaryColor` to `hosts.yaml` via `config.Save()` and returns to browsing
 - `Esc` discards all changes (reloads `m.theme` from the persisted config) and returns to browsing
 
