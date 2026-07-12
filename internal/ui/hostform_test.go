@@ -4,10 +4,11 @@ import (
 	"testing"
 
 	"github.com/bvanhorn/exfil/internal/config"
+	"github.com/bvanhorn/exfil/internal/i18n"
 )
 
 func newTestForm() *HostFormPane {
-	return NewHostFormPane(NewTheme())
+	return NewHostFormPane()
 }
 
 func TestBuildHostValidation(t *testing.T) {
@@ -32,7 +33,7 @@ func TestBuildHostValidation(t *testing.T) {
 		f.inputs[fieldUser].SetValue(tt.user)
 		f.inputs[fieldPort].SetValue(tt.port)
 
-		_, err := f.buildHost()
+		_, err := f.buildHost(i18n.NewLocalizer("plain"))
 		if (err != nil) != tt.wantErr {
 			t.Errorf("name=%q hostname=%q user=%q port=%q: got err=%v, wantErr=%v",
 				tt.name, tt.hostname, tt.user, tt.port, err, tt.wantErr)
@@ -46,7 +47,7 @@ func TestBuildHostDefaultPort(t *testing.T) {
 	f.inputs[fieldHostname].SetValue("h")
 	f.inputs[fieldUser].SetValue("u")
 
-	host, err := f.buildHost()
+	host, err := f.buildHost(i18n.NewLocalizer("plain"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestSaveEditsByName(t *testing.T) {
 	f.ResetForEdit(seed.Hosts[1]) // editing "beta"
 	f.inputs[fieldHostname].SetValue("3.3.3.3")
 
-	if _, err := f.Save(); err != nil {
+	if _, err := f.Save(i18n.NewLocalizer("plain")); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -113,7 +114,7 @@ func TestSaveAddsNewHost(t *testing.T) {
 	f.inputs[fieldHostname].SetValue("9.9.9.9")
 	f.inputs[fieldUser].SetValue("u")
 
-	if _, err := f.Save(); err != nil {
+	if _, err := f.Save(i18n.NewLocalizer("plain")); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 

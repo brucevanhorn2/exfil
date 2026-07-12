@@ -142,7 +142,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	if err := hostPicker.Load(); err != nil {
 		logger.Printf("failed to load hosts.yaml: %v", err)
 	}
-	hostForm := NewHostFormPane(theme)
+	hostForm := NewHostFormPane()
 	aboutPane := NewAboutPane(theme)
 
 	m := &Model{
@@ -388,7 +388,7 @@ func (m *Model) handleHostFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hostForm.PrevField()
 		return m, nil
 	case "enter":
-		host, err := m.hostForm.Save()
+		host, err := m.hostForm.Save(m.loc)
 		if err != nil {
 			// Validation/save error is shown inline on the form; stay put.
 			return m, nil
@@ -490,7 +490,7 @@ func (m *Model) View() string {
 	if m.screen == ScreenHostPicker {
 		content = m.hostPicker.View(m.theme, m.loc)
 	} else if m.screen == ScreenAddHost {
-		content = m.hostForm.View()
+		content = m.hostForm.View(m.theme, m.loc)
 	} else if m.screen == ScreenAbout {
 		content = m.aboutPane.View()
 	}
