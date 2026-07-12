@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"sort"
+	"sync"
 
 	"github.com/bvanhorn/exfil/internal/config"
 	"github.com/bvanhorn/exfil/internal/fsys"
@@ -79,10 +80,15 @@ type Model struct {
 	// transferDest maps an in-flight transfer's ID to which pane ("local" or
 	// "remote") it's copying into, so TransferDoneMsg knows which pane to
 	// refresh. Entries are removed once the transfer finishes or errors.
-	transferDest map[int]string
-	eventsCh     chan tea.Msg
-	jobsCh       chan transfer.Job
-	logger       *log.Logger
+	// Written from enqueueCopyDirection's tea.Cmd goroutine and read/deleted
+	// from Update()'s goroutine, so access must go through transferDestMu —
+	// a plain map write racing a map read/delete is a fatal Go runtime
+	// error, not just a benign data race.
+	transferDest   map[int]string
+	transferDestMu sync.Mutex
+	eventsCh       chan tea.Msg
+	jobsCh         chan transfer.Job
+	logger         *log.Logger
 
 	// SSH connection state. Held so we can close cleanly and so the remote
 	// pane's RemoteFS shares the single sftp client (safe for concurrent use).
@@ -297,8 +303,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transfer.TransferDoneMsg:
 		// Transfer completed successfully.
 		m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
-		dstName, ok := m.transferDest[msg.ID]
-		delete(m.transferDest, msg.ID)
+		dstName, ok := m.popTransferDest(msg.ID)
 		if !ok {
 			return m, waitForEvent(m.eventsCh)
 		}
@@ -314,7 +319,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transfer.TransferErrorMsg:
 		// Transfer failed. Mark it as error and keep the error message visible.
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
-		delete(m.transferDest, msg.ID)
+		m.popTransferDest(msg.ID)
 		return m, waitForEvent(m.eventsCh)
 	}
 
@@ -703,7 +708,7 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 
 			id := m.nextID
 			m.nextID++
-			m.transferDest[id] = dstName
+			m.setTransferDest(id, dstName)
 
 			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
 			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)
@@ -731,6 +736,25 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 
 		return nil
 	}
+}
+
+// setTransferDest and popTransferDest guard m.transferDest with a mutex:
+// setTransferDest is called from enqueueCopyDirection's tea.Cmd goroutine,
+// popTransferDest from Update()'s goroutine, and a plain map has no built-in
+// protection against that — Go's runtime treats a concurrent map
+// write/read as a fatal, unrecoverable error rather than a benign race.
+func (m *Model) setTransferDest(id int, dstName string) {
+	m.transferDestMu.Lock()
+	defer m.transferDestMu.Unlock()
+	m.transferDest[id] = dstName
+}
+
+func (m *Model) popTransferDest(id int) (string, bool) {
+	m.transferDestMu.Lock()
+	defer m.transferDestMu.Unlock()
+	dstName, ok := m.transferDest[id]
+	delete(m.transferDest, id)
+	return dstName, ok
 }
 
 // waitForEvent is the "subscription" pattern in bubbletea.

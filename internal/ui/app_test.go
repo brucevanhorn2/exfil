@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/bvanhorn/exfil/internal/config"
@@ -291,4 +292,35 @@ func TestViewSetsDisconnectedRemoteEmptyMessage(t *testing.T) {
 	if m.remotePane.EmptyMessage != "" {
 		t.Error("expected remotePane.EmptyMessage to be cleared in test mode")
 	}
+}
+
+// TestTransferDestConcurrentAccess is a regression test for a data race:
+// setTransferDest is called from enqueueCopyDirection's tea.Cmd goroutine,
+// popTransferDest from Update()'s goroutine. A plain map has no protection
+// against that — a concurrent map write racing a read/delete is a fatal,
+// unrecoverable Go runtime error, not just a benign race. Run with -race to
+// verify the mutex actually guards every access.
+func TestTransferDestConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+
+	const n = 200
+	var wg sync.WaitGroup
+	wg.Add(2 * n)
+
+	for i := 0; i < n; i++ {
+		id := i
+		go func() {
+			defer wg.Done()
+			m.setTransferDest(id, "remote")
+		}()
+		go func() {
+			defer wg.Done()
+			m.popTransferDest(id)
+		}()
+	}
+
+	wg.Wait()
 }
