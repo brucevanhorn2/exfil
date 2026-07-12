@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bvanhorn/exfil/internal/config"
+	"github.com/bvanhorn/exfil/internal/fsys"
 	"github.com/bvanhorn/exfil/internal/transfer"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -110,5 +111,105 @@ func TestHandleSettingsKeyEnterAbortsSaveOnConfigLoadFailure(t *testing.T) {
 	}
 	if string(after) != string(corrupt) {
 		t.Errorf("hosts.yaml was overwritten despite config.Load() failure; got %q, want unchanged %q", after, corrupt)
+	}
+}
+
+// TestTransferDoneMsgRefreshesDestinationPane guards against a regression of
+// the "destination pane doesn't update after a transfer" bug: once a
+// transfer.TransferDoneMsg arrives, the pane it copied into should be
+// re-listed so the new file shows up without the user navigating away and
+// back.
+func TestTransferDoneMsgRefreshesDestinationPane(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger())
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.remotePane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.remotePane.Entries) != 0 {
+		t.Fatalf("expected empty destination pane before transfer, got %v", m.remotePane.Entries)
+	}
+
+	// Enqueue the push (local -> remote) via the real code path; the
+	// returned Cmd is just a function, safe to run synchronously here.
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+
+	var job transfer.Job
+	select {
+	case job = <-m.jobsCh:
+	default:
+		t.Fatal("expected a job to be queued on jobsCh")
+	}
+
+	// Simulate the worker pool having already written the file (this test
+	// exercises the post-completion refresh, not the copy itself).
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unblock waitForEvent's channel receive so it's safe to run every Cmd
+	// in the returned batch synchronously.
+	m.eventsCh <- nil
+
+	_, batchCmd := m.Update(transfer.TransferDoneMsg{ID: job.ID})
+	if batchCmd == nil {
+		t.Fatal("expected a Cmd after TransferDoneMsg")
+	}
+
+	msg := batchCmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", msg)
+	}
+
+	var found bool
+	for _, sub := range batch {
+		result := sub()
+		rd, ok := result.(readDirMsg)
+		if !ok {
+			continue
+		}
+		found = true
+		if rd.pane != "remote" {
+			t.Errorf("expected refresh for the remote (destination) pane, got %q", rd.pane)
+		}
+		if rd.err != nil {
+			t.Fatalf("unexpected error refreshing destination pane: %v", rd.err)
+		}
+		m.Update(rd)
+	}
+	if !found {
+		t.Fatal("expected a readDirMsg among the batched commands")
+	}
+
+	names := make([]string, len(m.remotePane.Entries))
+	for i, e := range m.remotePane.Entries {
+		names[i] = e.Name
+	}
+	if len(names) != 1 || names[0] != "file.txt" {
+		t.Errorf("expected destination pane to show the transferred file, got entries %v", names)
+	}
+
+	if _, stillTracked := m.transferDest[job.ID]; stillTracked {
+		t.Errorf("expected transferDest entry for job %d to be cleared after completion", job.ID)
 	}
 }

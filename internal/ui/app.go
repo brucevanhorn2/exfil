@@ -76,9 +76,13 @@ type Model struct {
 	queuePane         *QueuePane
 	statusMsg         string
 	nextID            int
-	eventsCh          chan tea.Msg
-	jobsCh            chan transfer.Job
-	logger            *log.Logger
+	// transferDest maps an in-flight transfer's ID to which pane ("local" or
+	// "remote") it's copying into, so TransferDoneMsg knows which pane to
+	// refresh. Entries are removed once the transfer finishes or errors.
+	transferDest map[int]string
+	eventsCh     chan tea.Msg
+	jobsCh       chan transfer.Job
+	logger       *log.Logger
 
 	// SSH connection state. Held so we can close cleanly and so the remote
 	// pane's RemoteFS shares the single sftp client (safe for concurrent use).
@@ -166,6 +170,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		spinner:           sp,
 		statusMsg:         loc.T("status_ready"),
 		nextID:            1,
+		transferDest:      make(map[int]string),
 	}
 
 	m.localPane.Cwd = home
@@ -277,12 +282,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transfer.TransferDoneMsg:
 		// Transfer completed successfully.
 		m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
-		// TODO (M4): Refresh destination pane listing to show the new file
-		return m, waitForEvent(m.eventsCh)
+		dstName, ok := m.transferDest[msg.ID]
+		delete(m.transferDest, msg.ID)
+		if !ok {
+			return m, waitForEvent(m.eventsCh)
+		}
+		dstPane := m.remotePane
+		if dstName == "local" {
+			dstPane = m.localPane
+		}
+		// Re-list whichever directory the destination pane currently shows,
+		// so the newly-arrived file appears without the user navigating
+		// away and back.
+		return m, tea.Batch(waitForEvent(m.eventsCh), readDirCmd(dstName, dstPane.FS, dstPane.Cwd))
 
 	case transfer.TransferErrorMsg:
 		// Transfer failed. Mark it as error and keep the error message visible.
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
+		delete(m.transferDest, msg.ID)
 		return m, waitForEvent(m.eventsCh)
 	}
 
@@ -639,6 +656,11 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			return nil
 		}
 
+		dstName := "remote"
+		if dstPane == m.localPane {
+			dstName = "local"
+		}
+
 		for _, filename := range files {
 			entry := &fsys.Entry{}
 			for _, e := range srcPane.Entries {
@@ -655,6 +677,7 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 
 			id := m.nextID
 			m.nextID++
+			m.transferDest[id] = dstName
 
 			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
 			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)

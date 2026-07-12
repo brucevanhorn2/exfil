@@ -23,7 +23,6 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - Directory copy (currently shows "not supported")
 - Delete / rename / mkdir / view-edit operations
 - Multi-host sessions (one SSH connection at a time)
-- Destination pane doesn't auto-refresh after a transfer completes (navigate away and back)
 - Transfer cancellation (Ctrl+C kills the whole app, partial files left on disk)
 - Only one test file exists (`internal/transfer/copy_smoke_test.go`); UI logic (host form validation, path navigation) is undertested
 
@@ -50,6 +49,8 @@ The remote pane defaults to a `LocalFS` rooted at `/` until an SSH connection is
 ### Transfer progress
 
 `ProgressWriter` wraps `io.Writer`, throttles to ~6 msgs/sec, emits `TransferProgressMsg`. This keeps `eventsCh` from flooding on fast copies.
+
+`Model.transferDest` maps each in-flight transfer ID to which pane ("local"/"remote") it's copying into. `TransferDoneMsg` looks up the destination pane and re-lists whatever directory it currently shows, so a completed transfer appears without navigating away and back. The entry is removed on both `TransferDoneMsg` and `TransferErrorMsg`.
 
 ### Screen state machine (`internal/ui/app.go`)
 
@@ -119,4 +120,3 @@ CI runs `go build`, `go vet`, and a `gofmt` check on every push to `master`.
 - Mouse support for pane clicking
 - Search/filter files
 - Stat view (permissions, owner, timestamps)
-- Auto-refresh the destination pane after a transfer completes
