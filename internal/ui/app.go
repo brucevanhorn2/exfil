@@ -26,6 +26,7 @@ const (
 	ScreenHostPicker Screen = "hostpicker"
 	ScreenAddHost    Screen = "addhost"
 	ScreenAbout      Screen = "about"
+	ScreenSettings   Screen = "settings"
 )
 
 // Messages
@@ -72,6 +73,7 @@ type Model struct {
 	hostPicker        *HostPickerPane
 	hostForm          *HostFormPane
 	aboutPane         *AboutPane
+	settingsPane      *SettingsPane
 	queuePane         *QueuePane
 	statusMsg         string
 	nextID            int
@@ -144,6 +146,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	}
 	hostForm := NewHostFormPane()
 	aboutPane := NewAboutPane()
+	settingsPane := NewSettingsPane()
 
 	m := &Model{
 		screen:            ScreenBrowsing,
@@ -159,6 +162,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		hostPicker:        hostPicker,
 		hostForm:          hostForm,
 		aboutPane:         aboutPane,
+		settingsPane:      settingsPane,
 		queuePane:         NewQueuePane(),
 		spinner:           sp,
 		statusMsg:         "Ready.",
@@ -214,6 +218,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen == ScreenAbout {
 			return m.handleAboutKey(msg)
+		}
+		if m.screen == ScreenSettings {
+			return m.handleSettingsKey(msg)
 		}
 		return m.handleBrowsingKey(msg)
 
@@ -302,6 +309,9 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = ScreenHostPicker
 	case "?":
 		m.screen = ScreenAbout
+	case "S":
+		m.settingsPane.ResetFromConfig(m.loc.Pack(), m.primaryColorHex, m.secondaryColorHex)
+		m.screen = ScreenSettings
 	case "tab":
 		newLocalFocus := !m.localPane.Focus
 		m.localPane.SetFocus(newLocalFocus)
@@ -339,6 +349,75 @@ func (m *Model) handleAboutKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = ScreenBrowsing
 	}
 	return m, nil
+}
+
+// handleSettingsKey handles keys in the Settings screen.
+func (m *Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Discard: rebuild the theme from the last persisted values.
+		m.applyTheme(m.primaryColorHex, m.secondaryColorHex)
+		m.screen = ScreenBrowsing
+		return m, nil
+	case "tab":
+		m.settingsPane.NextField()
+		return m, nil
+	case "shift+tab":
+		m.settingsPane.PrevField()
+		return m, nil
+	case "left":
+		if m.settingsPane.Focused() == settingsFieldLingo {
+			m.settingsPane.CyclePack(-1)
+			return m, nil
+		}
+	case "right":
+		if m.settingsPane.Focused() == settingsFieldLingo {
+			m.settingsPane.CyclePack(1)
+			return m, nil
+		}
+	case "enter":
+		if err := m.settingsPane.Validate(); err != nil {
+			// Error shown inline on the form; stay put.
+			return m, nil
+		}
+		m.loc.SetPack(m.settingsPane.CurrentPack())
+		m.primaryColorHex = m.settingsPane.PrimaryValue()
+		m.secondaryColorHex = m.settingsPane.SecondaryValue()
+		m.applyTheme(m.primaryColorHex, m.secondaryColorHex)
+
+		cfg, err := config.Load()
+		if err != nil {
+			cfg = &config.Config{}
+		}
+		cfg.Lingo = m.loc.Pack()
+		cfg.PrimaryColor = m.primaryColorHex
+		cfg.SecondaryColor = m.secondaryColorHex
+		if err := cfg.Save(); err != nil {
+			m.statusMsg = fmt.Sprintf("Error saving settings: %v", err)
+		}
+		m.screen = ScreenBrowsing
+		return m, nil
+	}
+	// Any other key (character input) goes to whichever color textinput is
+	// focused; a no-op if the Lingo Pack row is focused.
+	cmd := m.settingsPane.HandleKey(msg)
+	return m, cmd
+}
+
+// applyTheme rebuilds m.theme from the given hex colors. Both are assumed
+// already-valid (either defaults, previously-persisted values, or freshly
+// validated by SettingsPane.Validate), so parse errors here are unexpected
+// and fall back to the package defaults rather than crash.
+func (m *Model) applyTheme(primaryHex, secondaryHex string) {
+	primary, err := parseHexColor(primaryHex)
+	if err != nil {
+		primary = lipgloss.Color(DefaultPrimaryColor)
+	}
+	secondary, err := parseHexColor(secondaryHex)
+	if err != nil {
+		secondary = lipgloss.Color(DefaultSecondaryColor)
+	}
+	m.theme = NewTheme(primary, secondary)
 }
 
 // handleHostPickerKey handles keys in the Site Manager overlay.
@@ -493,6 +572,18 @@ func (m *Model) View() string {
 		content = m.hostForm.View(m.theme, m.loc)
 	} else if m.screen == ScreenAbout {
 		content = m.aboutPane.View(m.theme, m.loc)
+	} else if m.screen == ScreenSettings {
+		previewPrimary, previewSecondary := m.settingsPane.PreviewColors(m.primaryColorHex, m.secondaryColorHex)
+		primary, err := parseHexColor(previewPrimary)
+		if err != nil {
+			primary = lipgloss.Color(DefaultPrimaryColor)
+		}
+		secondary, err := parseHexColor(previewSecondary)
+		if err != nil {
+			secondary = lipgloss.Color(DefaultSecondaryColor)
+		}
+		previewTheme := NewTheme(primary, secondary)
+		content = m.settingsPane.View(previewTheme, m.loc)
 	}
 
 	status := m.statusMsg
