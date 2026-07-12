@@ -9,6 +9,7 @@ import (
 
 	"github.com/bvanhorn/exfil/internal/config"
 	"github.com/bvanhorn/exfil/internal/fsys"
+	"github.com/bvanhorn/exfil/internal/i18n"
 	"github.com/bvanhorn/exfil/internal/sshclient"
 	"github.com/bvanhorn/exfil/internal/transfer"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -59,21 +60,24 @@ type transferErrorMsg struct {
 
 // Model is the root bubbletea model
 type Model struct {
-	width      int
-	height     int
-	screen     Screen
-	theme      Theme
-	localPane  *BrowserPane
-	remotePane *BrowserPane
-	hostPicker *HostPickerPane
-	hostForm   *HostFormPane
-	aboutPane  *AboutPane
-	queuePane  *QueuePane
-	statusMsg  string
-	nextID     int
-	eventsCh   chan tea.Msg
-	jobsCh     chan transfer.Job
-	logger     *log.Logger
+	width             int
+	height            int
+	screen            Screen
+	theme             Theme
+	loc               *i18n.Localizer
+	primaryColorHex   string
+	secondaryColorHex string
+	localPane         *BrowserPane
+	remotePane        *BrowserPane
+	hostPicker        *HostPickerPane
+	hostForm          *HostFormPane
+	aboutPane         *AboutPane
+	queuePane         *QueuePane
+	statusMsg         string
+	nextID            int
+	eventsCh          chan tea.Msg
+	jobsCh            chan transfer.Job
+	logger            *log.Logger
 
 	// SSH connection state. Held so we can close cleanly and so the remote
 	// pane's RemoteFS shares the single sftp client (safe for concurrent use).
@@ -91,9 +95,44 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	theme := NewTheme(lipgloss.Color(DefaultPrimaryColor), lipgloss.Color(DefaultSecondaryColor))
 	localFS := fsys.LocalFS{}
 	home, _ := localFS.Home()
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Printf("failed to load hosts.yaml for lingo/theme settings: %v", err)
+		cfg = &config.Config{}
+	}
+
+	lingo := cfg.Lingo
+	if lingo == "" {
+		lingo = "plain"
+	}
+	loc := i18n.NewLocalizer(lingo)
+
+	primaryColorHex := cfg.PrimaryColor
+	if primaryColorHex == "" {
+		primaryColorHex = DefaultPrimaryColor
+	}
+	primaryColor, err := parseHexColor(primaryColorHex)
+	if err != nil {
+		logger.Printf("invalid primary_color %q in hosts.yaml, using default: %v", primaryColorHex, err)
+		primaryColorHex = DefaultPrimaryColor
+		primaryColor = lipgloss.Color(DefaultPrimaryColor)
+	}
+
+	secondaryColorHex := cfg.SecondaryColor
+	if secondaryColorHex == "" {
+		secondaryColorHex = DefaultSecondaryColor
+	}
+	secondaryColor, err := parseHexColor(secondaryColorHex)
+	if err != nil {
+		logger.Printf("invalid secondary_color %q in hosts.yaml, using default: %v", secondaryColorHex, err)
+		secondaryColorHex = DefaultSecondaryColor
+		secondaryColor = lipgloss.Color(DefaultSecondaryColor)
+	}
+
+	theme := NewTheme(primaryColor, secondaryColor)
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -107,20 +146,23 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	aboutPane := NewAboutPane(theme)
 
 	m := &Model{
-		screen:     ScreenBrowsing,
-		theme:      theme,
-		eventsCh:   eventsCh,
-		jobsCh:     jobsCh,
-		logger:     logger,
-		localPane:  NewBrowserPane("local", localFS, theme),
-		remotePane: NewBrowserPane("remote", fsys.LocalFS{}, theme),
-		hostPicker: hostPicker,
-		hostForm:   hostForm,
-		aboutPane:  aboutPane,
-		queuePane:  NewQueuePane(theme),
-		spinner:    sp,
-		statusMsg:  "Ready.",
-		nextID:     1,
+		screen:            ScreenBrowsing,
+		theme:             theme,
+		loc:               loc,
+		primaryColorHex:   primaryColorHex,
+		secondaryColorHex: secondaryColorHex,
+		eventsCh:          eventsCh,
+		jobsCh:            jobsCh,
+		logger:            logger,
+		localPane:         NewBrowserPane("local", localFS, theme),
+		remotePane:        NewBrowserPane("remote", fsys.LocalFS{}, theme),
+		hostPicker:        hostPicker,
+		hostForm:          hostForm,
+		aboutPane:         aboutPane,
+		queuePane:         NewQueuePane(theme),
+		spinner:           sp,
+		statusMsg:         "Ready.",
+		nextID:            1,
 	}
 
 	m.localPane.Cwd = home
