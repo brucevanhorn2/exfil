@@ -18,17 +18,15 @@ type BrowserPane struct {
 	Selected  map[string]bool
 	Width     int
 	Height    int
-	theme     Theme
 	scrollTop int
 }
 
-func NewBrowserPane(title string, fs fsys.FileSystem, theme Theme) *BrowserPane {
+func NewBrowserPane(title string, fs fsys.FileSystem) *BrowserPane {
 	return &BrowserPane{
 		Title:    title,
 		FS:       fs,
 		Cwd:      "/",
 		Selected: make(map[string]bool),
-		theme:    theme,
 	}
 }
 
@@ -146,13 +144,13 @@ func (b *BrowserPane) CurrentFile() *fsys.Entry {
 	return &b.Entries[b.Cursor]
 }
 
-func (b *BrowserPane) View() string {
-	titleStyle := b.theme.PaneTitle
-	borderStyle := b.theme.PaneBorder
+func (b *BrowserPane) View(theme Theme) string {
+	titleStyle := theme.PaneTitle
+	borderStyle := theme.PaneBorder
 
 	if b.Focus {
-		titleStyle = b.theme.PaneTitleFocus
-		borderStyle = b.theme.PaneBorderFocus
+		titleStyle = theme.PaneTitleFocus
+		borderStyle = theme.PaneBorderFocus
 	}
 
 	titleWithPath := titleStyle.Render(fmt.Sprintf(" %s:%s ", b.Title, b.Cwd))
@@ -185,12 +183,12 @@ func (b *BrowserPane) View() string {
 		}
 		marker := cursorMark + selectMark + " "
 
-		style := b.theme.BrowserFile
+		style := theme.BrowserFile
 		if e.IsDir {
-			style = b.theme.BrowserDir
+			style = theme.BrowserDir
 		}
 		if isSelected {
-			style = b.theme.BrowserSelected
+			style = theme.BrowserSelected
 		}
 
 		line := marker + style.Render(e.Name)

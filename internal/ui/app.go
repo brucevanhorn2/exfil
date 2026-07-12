@@ -154,8 +154,8 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		eventsCh:          eventsCh,
 		jobsCh:            jobsCh,
 		logger:            logger,
-		localPane:         NewBrowserPane("local", localFS, theme),
-		remotePane:        NewBrowserPane("remote", fsys.LocalFS{}, theme),
+		localPane:         NewBrowserPane("local", localFS),
+		remotePane:        NewBrowserPane("remote", fsys.LocalFS{}),
 		hostPicker:        hostPicker,
 		hostForm:          hostForm,
 		aboutPane:         aboutPane,
@@ -476,8 +476,8 @@ func (m *Model) View() string {
 	m.aboutPane.Width = m.width - 4
 	m.aboutPane.Height = m.height - queueHeight - 2
 
-	localView := m.localPane.View()
-	remoteView := m.remotePane.View()
+	localView := m.localPane.View(m.theme)
+	remoteView := m.remotePane.View(m.theme)
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, localView, remoteView)
 
