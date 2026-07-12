@@ -588,7 +588,8 @@ func (m *Model) View() string {
 			secondary = lipgloss.Color(DefaultSecondaryColor)
 		}
 		previewTheme := NewTheme(primary, secondary)
-		content = m.settingsPane.View(previewTheme, m.loc)
+		previewLoc := i18n.NewLocalizer(m.settingsPane.CurrentPack())
+		content = m.settingsPane.View(previewTheme, previewLoc)
 	}
 
 	status := m.statusMsg
