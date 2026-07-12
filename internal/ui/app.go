@@ -387,7 +387,13 @@ func (m *Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		cfg, err := config.Load()
 		if err != nil {
-			cfg = &config.Config{}
+			// A genuine parse failure (not "file missing") means we don't
+			// know what's in hosts.yaml — saving here would overwrite it
+			// with only the new lingo/theme fields and silently drop the
+			// existing Hosts list. Abort instead, matching HostFormPane.Save().
+			m.statusMsg = fmt.Sprintf("Error loading hosts.yaml, settings not saved: %v", err)
+			m.screen = ScreenBrowsing
+			return m, nil
 		}
 		cfg.Lingo = m.loc.Pack()
 		cfg.PrimaryColor = m.primaryColorHex
