@@ -269,16 +269,25 @@ git commit -m "Add internal/i18n package with the plain lingo pack"
 - Create: `internal/i18n/locales/secretsquirrel.yaml`
 - Create: `internal/i18n/locales/keyboardcowboy.yaml`
 - Create: `internal/i18n/locales/corposlut.yaml`
+- Modify: `internal/i18n/i18n.go` (restore `packOrder` to all four packs — Task 1 deliberately scoped it down to `{"plain"}` since the other three locale files didn't exist yet; see Task 1's report)
 - Modify: `internal/i18n/i18n_test.go` (add parity test)
 
 **Interfaces:**
 - Consumes: `Catalog`, `catalogs` (package-internal, from Task 1)
 
-- [ ] **Step 1: Write the failing test**
+**Note:** Task 1's `packOrder` in `internal/i18n/i18n.go` currently reads `var packOrder = []string{"plain"}` (not all four) — that was a necessary scoping-down for Task 1 to be independently testable, since `//go:embed locales/*.yaml` only embeds files that physically exist, and `init()` panics on a `packOrder` entry with no matching embedded file. This task both adds the three files AND restores `packOrder` to `{"plain", "secretsquirrel", "keyboardcowboy", "corposlut"}` — order matters here.
+
+- [ ] **Step 1: Write the failing tests**
 
 Add to `internal/i18n/i18n_test.go`:
 
 ```go
+func TestPacksHasFourEntries(t *testing.T) {
+	if len(Packs()) != 4 {
+		t.Errorf("Packs() = %v, want 4 entries", Packs())
+	}
+}
+
 func TestNonPlainPacksHaveEveryPlainKey(t *testing.T) {
 	plainKeys := catalogs["plain"]
 	for _, pack := range Packs() {
@@ -296,8 +305,8 @@ func TestNonPlainPacksHaveEveryPlainKey(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `go test ./internal/i18n/... -run TestNonPlainPacksHaveEveryPlainKey -v`
-Expected: FAIL — `secretsquirrel`/`keyboardcowboy`/`corposlut` aren't in `packOrder`'s embedded files yet, so `init()` will actually panic (missing embedded file) rather than fail cleanly. That panic *is* the expected failure for this step.
+Run: `go test ./internal/i18n/... -run TestPacksHasFourEntries -v`
+Expected: FAIL — `Packs()` currently returns only `["plain"]` (1 entry), since Task 1 scoped `packOrder` down to just that one pack. This is a clean assertion failure, not a panic, because `packOrder` doesn't yet reference the other three (still-missing) locale files.
 
 - [ ] **Step 3: Write `internal/i18n/locales/secretsquirrel.yaml`**
 
@@ -443,15 +452,29 @@ settings_label_secondary: "Accent Color"
 settings_hint: "[Tab/Shift+Tab] move  [←/→] cycle  [Enter] submit  [Esc] cancel"
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 6: Restore `packOrder` in `internal/i18n/i18n.go`**
+
+Find:
+
+```go
+var packOrder = []string{"plain"}
+```
+
+Replace with:
+
+```go
+var packOrder = []string{"plain", "secretsquirrel", "keyboardcowboy", "corposlut"}
+```
+
+- [ ] **Step 7: Run test to verify it passes**
 
 Run: `go test ./internal/i18n/... -v`
-Expected: PASS (all 8 tests, including the new parity test)
+Expected: PASS (all 9 tests: the original 7 from Task 1, plus `TestPacksHasFourEntries` and `TestNonPlainPacksHaveEveryPlainKey`)
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add internal/i18n/locales/secretsquirrel.yaml internal/i18n/locales/keyboardcowboy.yaml internal/i18n/locales/corposlut.yaml internal/i18n/i18n_test.go
+git add internal/i18n/locales/secretsquirrel.yaml internal/i18n/locales/keyboardcowboy.yaml internal/i18n/locales/corposlut.yaml internal/i18n/i18n_test.go internal/i18n/i18n.go
 git commit -m "Add secretsquirrel, keyboardcowboy, and corposlut lingo packs"
 ```
 
