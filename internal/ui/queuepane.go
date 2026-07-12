@@ -10,10 +10,10 @@ import (
 type TransferStatus string
 
 const (
-	StatusQueued   TransferStatus = "queued"
-	StatusRunning  TransferStatus = "running"
-	StatusDone     TransferStatus = "done"
-	StatusError    TransferStatus = "error"
+	StatusQueued  TransferStatus = "queued"
+	StatusRunning TransferStatus = "running"
+	StatusDone    TransferStatus = "done"
+	StatusError   TransferStatus = "error"
 )
 
 type Transfer struct {
@@ -61,20 +61,40 @@ func (q *QueuePane) View() string {
 	title := q.theme.QueueTitle.Render(" Transfer Queue ")
 	border := q.theme.QueueBorder
 
-	if len(q.Transfers) == 0 {
-		empty := "  No transfers"
-		return border.Render(title + "\n" + empty)
+	// -2 for the border's top/bottom lines, -1 for the title line above.
+	maxRows := q.Height - 3
+	if maxRows < 1 {
+		maxRows = 1
+	}
+
+	// Cap how many transfers are shown so the pane's rendered height never
+	// exceeds its assigned budget (previously it grew by one line per queued
+	// file with no limit, pushing the whole TUI taller than the terminal and
+	// causing the top to scroll off). Show the most recent ones.
+	transfers := q.Transfers
+	if len(transfers) > maxRows {
+		transfers = transfers[len(transfers)-maxRows:]
 	}
 
 	lines := []string{title}
+	rowsRendered := 0
 
-	for _, t := range q.Transfers {
-		line := q.renderTransfer(t)
-		lines = append(lines, line)
+	if len(transfers) == 0 {
+		lines = append(lines, "  No transfers")
+		rowsRendered++
+	} else {
+		for _, t := range transfers {
+			lines = append(lines, q.renderTransfer(t))
+			rowsRendered++
+		}
+	}
+
+	for ; rowsRendered < maxRows; rowsRendered++ {
+		lines = append(lines, "")
 	}
 
 	content := strings.Join(lines, "\n")
-	return border.Render(content)
+	return border.Width(q.Width).Render(content)
 }
 
 func (q *QueuePane) renderTransfer(t Transfer) string {

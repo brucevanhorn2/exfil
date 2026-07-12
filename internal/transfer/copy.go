@@ -12,7 +12,8 @@ import (
 // progressWriter wraps an io.Writer and tracks bytes written, emitting progress messages.
 // It throttles messages to ~6 per second (150ms intervals) to avoid flooding eventsCh
 // on fast copies, and always emits when done. Used as:
-//   io.Copy(dst, io.TeeReader(src, &progressWriter{...}))
+//
+//	io.Copy(dst, io.TeeReader(src, &progressWriter{...}))
 type progressWriter struct {
 	id        int
 	total     int64

@@ -6,31 +6,31 @@ import (
 
 type Theme struct {
 	// Pane borders
-	PaneBorder       lipgloss.Style
-	PaneBorderFocus  lipgloss.Style
-	PaneTitle        lipgloss.Style
-	PaneTitleFocus   lipgloss.Style
+	PaneBorder      lipgloss.Style
+	PaneBorderFocus lipgloss.Style
+	PaneTitle       lipgloss.Style
+	PaneTitleFocus  lipgloss.Style
 
 	// Browser content
-	BrowserDir       lipgloss.Style
-	BrowserFile      lipgloss.Style
-	BrowserSelected  lipgloss.Style
-	BrowserCursor    lipgloss.Style
+	BrowserDir      lipgloss.Style
+	BrowserFile     lipgloss.Style
+	BrowserSelected lipgloss.Style
+	BrowserCursor   lipgloss.Style
 
 	// Queue pane
-	QueueBorder      lipgloss.Style
-	QueueTitle       lipgloss.Style
-	TransferQueued   lipgloss.Style
-	TransferRunning  lipgloss.Style
-	TransferDone     lipgloss.Style
-	TransferError    lipgloss.Style
-	ProgressBar      lipgloss.Style
+	QueueBorder     lipgloss.Style
+	QueueTitle      lipgloss.Style
+	TransferQueued  lipgloss.Style
+	TransferRunning lipgloss.Style
+	TransferDone    lipgloss.Style
+	TransferError   lipgloss.Style
+	ProgressBar     lipgloss.Style
 
 	// Status bar
-	StatusBar        lipgloss.Style
-	StatusKey        lipgloss.Style
-	StatusValue      lipgloss.Style
-	StatusError      lipgloss.Style
+	StatusBar   lipgloss.Style
+	StatusKey   lipgloss.Style
+	StatusValue lipgloss.Style
+	StatusError lipgloss.Style
 }
 
 func NewTheme() Theme {

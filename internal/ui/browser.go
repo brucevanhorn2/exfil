@@ -9,17 +9,17 @@ import (
 )
 
 type BrowserPane struct {
-	Title       string
-	FS          fsys.FileSystem
-	Cwd         string
-	Entries     []fsys.Entry
-	Cursor      int
-	Focus       bool
-	Selected    map[string]bool
-	Width       int
-	Height      int
-	theme       Theme
-	scrollTop   int
+	Title     string
+	FS        fsys.FileSystem
+	Cwd       string
+	Entries   []fsys.Entry
+	Cursor    int
+	Focus     bool
+	Selected  map[string]bool
+	Width     int
+	Height    int
+	theme     Theme
+	scrollTop int
 }
 
 func NewBrowserPane(title string, fs fsys.FileSystem, theme Theme) *BrowserPane {
@@ -81,11 +81,14 @@ func (b *BrowserPane) Down() {
 }
 
 func (b *BrowserPane) ensureVisible() {
+	// Must match View()'s contentHeight (b.Height minus border top/bottom
+	// and the title line) or the cursor can scroll past what's rendered.
+	visibleRows := b.Height - 3
 	if b.Cursor < b.scrollTop {
 		b.scrollTop = b.Cursor
 	}
-	if b.Cursor >= b.scrollTop+b.Height-2 {
-		b.scrollTop = b.Cursor - b.Height + 2
+	if b.Cursor >= b.scrollTop+visibleRows {
+		b.scrollTop = b.Cursor - visibleRows + 1
 	}
 }
 
@@ -105,9 +108,12 @@ func (b *BrowserPane) Back() error {
 	if b.Cwd == "/" {
 		return nil
 	}
+	// Splitting an absolute path always yields a leading "" element (from
+	// the root slash), so parts[:len(parts)-1] already starts with "/" once
+	// joined — prepending another "/" produced a "//" prefix.
 	parts := strings.Split(strings.TrimRight(b.Cwd, "/"), "/")
-	if len(parts) > 1 {
-		b.Cwd = "/" + strings.Join(parts[:len(parts)-1], "/")
+	if len(parts) > 2 {
+		b.Cwd = strings.Join(parts[:len(parts)-1], "/")
 	} else {
 		b.Cwd = "/"
 	}
@@ -153,39 +159,57 @@ func (b *BrowserPane) View() string {
 
 	lines := []string{titleWithPath}
 
-	contentHeight := b.Height - 2
+	// -2 for the border's top/bottom lines, -1 for the title line above.
+	contentHeight := b.Height - 3
+	if contentHeight < 0 {
+		contentHeight = 0
+	}
 
+	rowsRendered := 0
 	for i := b.scrollTop; i < len(b.Entries) && i < b.scrollTop+contentHeight; i++ {
 		e := b.Entries[i]
-		var line string
+		isCursor := i == b.Cursor && b.Focus
+		isSelected := b.Selected[e.Name]
 
-		if i == b.Cursor && b.Focus {
-			marker := "► "
-			if e.IsDir {
-				line = marker + b.theme.BrowserDir.Render(e.Name) + "/"
-			} else {
-				line = marker + b.theme.BrowserFile.Render(e.Name)
-			}
-		} else if b.Selected[e.Name] {
-			marker := "☑ "
-			if e.IsDir {
-				line = marker + b.theme.BrowserSelected.Render(e.Name) + "/"
-			} else {
-				line = marker + b.theme.BrowserSelected.Render(e.Name)
-			}
-		} else {
-			marker := "  "
-			if e.IsDir {
-				line = marker + b.theme.BrowserDir.Render(e.Name) + "/"
-			} else {
-				line = marker + b.theme.BrowserFile.Render(e.Name)
-			}
+		// Cursor and selection are independent states and must both be
+		// visible at once: a checkbox for selection, an arrow for cursor
+		// position, so a selected file under the cursor doesn't look
+		// identical to a merely-hovered one.
+		cursorMark := " "
+		if isCursor {
+			cursorMark = "►"
+		}
+		selectMark := " "
+		if isSelected {
+			selectMark = "☑"
+		}
+		marker := cursorMark + selectMark + " "
+
+		style := b.theme.BrowserFile
+		if e.IsDir {
+			style = b.theme.BrowserDir
+		}
+		if isSelected {
+			style = b.theme.BrowserSelected
+		}
+
+		line := marker + style.Render(e.Name)
+		if e.IsDir {
+			line += "/"
 		}
 
 		lines = append(lines, line)
+		rowsRendered++
+	}
+
+	// Pad remaining rows so the box fills its assigned height even when
+	// there are fewer entries than contentHeight (e.g. a freshly-connected
+	// remote pane with a short directory listing).
+	for ; rowsRendered < contentHeight; rowsRendered++ {
+		lines = append(lines, "")
 	}
 
 	content := strings.Join(lines, "\n")
-	bordered := borderStyle.Render(content)
+	bordered := borderStyle.Width(b.Width).Render(content)
 	return bordered
 }

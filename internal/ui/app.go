@@ -24,6 +24,7 @@ const (
 	ScreenBrowsing   Screen = "browsing"
 	ScreenHostPicker Screen = "hostpicker"
 	ScreenAddHost    Screen = "addhost"
+	ScreenAbout      Screen = "about"
 )
 
 // Messages
@@ -65,6 +66,8 @@ type Model struct {
 	localPane  *BrowserPane
 	remotePane *BrowserPane
 	hostPicker *HostPickerPane
+	hostForm   *HostFormPane
+	aboutPane  *AboutPane
 	queuePane  *QueuePane
 	statusMsg  string
 	nextID     int
@@ -100,6 +103,8 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	if err := hostPicker.Load(); err != nil {
 		logger.Printf("failed to load hosts.yaml: %v", err)
 	}
+	hostForm := NewHostFormPane(theme)
+	aboutPane := NewAboutPane(theme)
 
 	m := &Model{
 		screen:     ScreenBrowsing,
@@ -110,9 +115,11 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		localPane:  NewBrowserPane("local", localFS, theme),
 		remotePane: NewBrowserPane("remote", fsys.LocalFS{}, theme),
 		hostPicker: hostPicker,
+		hostForm:   hostForm,
+		aboutPane:  aboutPane,
 		queuePane:  NewQueuePane(theme),
 		spinner:    sp,
-		statusMsg:  "Ready. [Tab] switch pane  [↑/↓] nav  [↵] enter  [⌫] back  [space] select  [c] copy  [s] connect  [q] quit",
+		statusMsg:  "Ready.",
 		nextID:     1,
 	}
 
@@ -131,6 +138,17 @@ func (m *Model) Init() tea.Cmd {
 			}
 			return readDirMsg{pane: "local", entries: m.localPane.Entries}
 		},
+		func() tea.Msg {
+			// Refresh the remote pane too, even before an SSH connection is
+			// made: it defaults to a LocalFS rooted at "/", which lets both
+			// panes be used for local-to-local testing (see README). Once
+			// connected, sshConnectedMsg's readDirCmd overwrites this with
+			// the real remote listing.
+			if err := m.remotePane.Refresh(); err != nil {
+				return readDirMsg{pane: "remote", err: err}
+			}
+			return readDirMsg{pane: "remote", entries: m.remotePane.Entries}
+		},
 		waitForEvent(m.eventsCh),
 	)
 }
@@ -138,20 +156,22 @@ func (m *Model) Init() tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// Pane dimensions are (re)computed in View() every render from
+		// m.width/m.height, so there's a single source of truth for layout.
 		m.width = msg.Width
 		m.height = msg.Height
-		m.localPane.Width = m.width/2 - 2
-		m.localPane.Height = m.height - 6
-		m.remotePane.Width = m.width/2 - 2
-		m.remotePane.Height = m.height - 6
-		m.queuePane.Width = m.width - 4
-		m.queuePane.Height = 3
 
 	case tea.KeyMsg:
 		// Route keys by the active screen. The host picker is a modal overlay
 		// on top of the browsing view.
 		if m.screen == ScreenHostPicker {
 			return m.handleHostPickerKey(msg)
+		}
+		if m.screen == ScreenAddHost {
+			return m.handleHostFormKey(msg)
+		}
+		if m.screen == ScreenAbout {
+			return m.handleAboutKey(msg)
 		}
 		return m.handleBrowsingKey(msg)
 
@@ -238,13 +258,22 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Error loading hosts: %v", err)
 		}
 		m.screen = ScreenHostPicker
+	case "?":
+		m.screen = ScreenAbout
 	case "tab":
-		m.localPane.SetFocus(!m.localPane.Focus)
-		m.remotePane.SetFocus(m.localPane.Focus)
+		newLocalFocus := !m.localPane.Focus
+		m.localPane.SetFocus(newLocalFocus)
+		m.remotePane.SetFocus(!newLocalFocus)
 	case "up":
 		active.Up()
 	case "down":
 		active.Down()
+	case "right":
+		// Push selected/current file(s) from local into remote.
+		return m, m.enqueueCopyDirection(m.localPane, m.remotePane)
+	case "left":
+		// Pull selected/current file(s) from remote into local.
+		return m, m.enqueueCopyDirection(m.remotePane, m.localPane)
 	case "enter":
 		if err := active.Enter(); err != nil {
 			m.statusMsg = fmt.Sprintf("Error: %v", err)
@@ -261,6 +290,15 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleAboutKey handles keys in the About overlay.
+func (m *Model) handleAboutKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "?":
+		m.screen = ScreenBrowsing
+	}
+	return m, nil
+}
+
 // handleHostPickerKey handles keys in the Site Manager overlay.
 func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -270,6 +308,17 @@ func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.hostPicker.Up()
 	case "down":
 		m.hostPicker.Down()
+	case "n":
+		m.hostForm.ResetForAdd()
+		m.screen = ScreenAddHost
+	case "e":
+		host := m.hostPicker.CurrentHost()
+		if host == nil {
+			m.statusMsg = "No host selected"
+			return m, nil
+		}
+		m.hostForm.ResetForEdit(*host)
+		m.screen = ScreenAddHost
 	case "enter":
 		host := m.hostPicker.CurrentHost()
 		if host == nil {
@@ -282,6 +331,35 @@ func (m *Model) handleHostPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.connectSSH(*host), m.spinner.Tick)
 	}
 	return m, nil
+}
+
+// handleHostFormKey handles keys in the Add/Edit Host form.
+func (m *Model) handleHostFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.screen = ScreenHostPicker
+		return m, nil
+	case "tab":
+		m.hostForm.NextField()
+		return m, nil
+	case "shift+tab":
+		m.hostForm.PrevField()
+		return m, nil
+	case "enter":
+		host, err := m.hostForm.Save()
+		if err != nil {
+			// Validation/save error is shown inline on the form; stay put.
+			return m, nil
+		}
+		if err := m.hostPicker.Load(); err != nil {
+			m.statusMsg = fmt.Sprintf("Error reloading hosts: %v", err)
+		}
+		m.statusMsg = fmt.Sprintf("Saved host %q", host.Name)
+		m.screen = ScreenHostPicker
+		return m, nil
+	}
+	cmd := m.hostForm.HandleKey(msg)
+	return m, cmd
 }
 
 // connectSSH returns a tea.Cmd that dials the host off the UI thread and
@@ -339,14 +417,22 @@ func readDirCmd(pane string, fs fsys.FileSystem, cwd string) tea.Cmd {
 }
 
 func (m *Model) View() string {
-	m.localPane.Width = m.width/2 - 3
-	m.localPane.Height = m.height - 8
+	// Budget: pane row + queue pane (fixed 8 rows, up to 5 transfers) +
+	// hints line + status line. QueuePane.View() caps its own row count to
+	// this height regardless of how many transfers are queued, so this
+	// budget holds no matter how many files get selected.
+	const queueHeight = 8
+	m.localPane.Width = m.width/2 - 2
+	m.localPane.Height = m.height - queueHeight - 2
 
-	m.remotePane.Width = m.width/2 - 3
-	m.remotePane.Height = m.height - 8
+	m.remotePane.Width = m.width/2 - 2
+	m.remotePane.Height = m.height - queueHeight - 2
 
 	m.queuePane.Width = m.width - 4
-	m.queuePane.Height = 4
+	m.queuePane.Height = queueHeight
+
+	m.aboutPane.Width = m.width - 4
+	m.aboutPane.Height = m.height - queueHeight - 2
 
 	localView := m.localPane.View()
 	remoteView := m.remotePane.View()
@@ -361,6 +447,10 @@ func (m *Model) View() string {
 	// dual-pane content area.
 	if m.screen == ScreenHostPicker {
 		content = m.hostPicker.View()
+	} else if m.screen == ScreenAddHost {
+		content = m.hostForm.View()
+	} else if m.screen == ScreenAbout {
+		content = m.aboutPane.View()
 	}
 
 	status := m.statusMsg
@@ -369,22 +459,37 @@ func (m *Model) View() string {
 	}
 	statusBar := m.theme.StatusBar.Render(status)
 
-	footer := lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
+	footer := content
+
+	// The browsing screen's key hints are shown on their own persistent line
+	// so a transient status message (e.g. "Connected to host") never hides
+	// them. The host picker/form screens embed their own hints in their
+	// title, so only the transient status line applies there.
+	if m.screen == ScreenBrowsing {
+		hintsBar := m.theme.StatusBar.Render(
+			"[Tab] switch pane  [↑/↓] nav  [→] push→remote  [←] pull←local  [↵] enter  [⌫] back  [space] select  [s] hosts  [?] about  [q] quit",
+		)
+		footer = lipgloss.JoinVertical(lipgloss.Left, footer, hintsBar)
+	}
+
+	footer = lipgloss.JoinVertical(lipgloss.Left, footer, statusBar)
 
 	return footer
 }
 
+// enqueueCopy copies from the currently focused pane to the other pane.
 func (m *Model) enqueueCopy() tea.Cmd {
-	return func() tea.Msg {
-		var srcPane, dstPane *BrowserPane
-		if m.localPane.Focus {
-			srcPane = m.localPane
-			dstPane = m.remotePane
-		} else {
-			srcPane = m.remotePane
-			dstPane = m.localPane
-		}
+	if m.localPane.Focus {
+		return m.enqueueCopyDirection(m.localPane, m.remotePane)
+	}
+	return m.enqueueCopyDirection(m.remotePane, m.localPane)
+}
 
+// enqueueCopyDirection copies from srcPane to dstPane regardless of focus.
+// Used by the Left/Right arrow shortcuts, which point in the direction the
+// file travels: Right pushes local → remote, Left pulls remote → local.
+func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
+	return func() tea.Msg {
 		files := srcPane.GetSelectedFiles()
 		if len(files) == 0 {
 			if entry := srcPane.CurrentFile(); entry != nil {

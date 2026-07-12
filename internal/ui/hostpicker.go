@@ -17,8 +17,8 @@ type HostPickerPane struct {
 
 func NewHostPickerPane(theme Theme) *HostPickerPane {
 	return &HostPickerPane{
-		Hosts:  []config.Host{},
-		theme:  theme,
+		Hosts: []config.Host{},
+		theme: theme,
 	}
 }
 
@@ -56,7 +56,7 @@ func (hp *HostPickerPane) View() string {
 	}
 
 	lines := []string{
-		hp.theme.PaneTitle.Render(" Saved Hosts - [↑/↓] navigate, [↵] connect, [n] add host "),
+		hp.theme.PaneTitle.Render(" Saved Hosts - [↑/↓] navigate, [↵] connect, [n] add, [e] edit "),
 	}
 
 	for i, host := range hp.Hosts {
