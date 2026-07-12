@@ -159,7 +159,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		hostPicker:        hostPicker,
 		hostForm:          hostForm,
 		aboutPane:         aboutPane,
-		queuePane:         NewQueuePane(theme),
+		queuePane:         NewQueuePane(),
 		spinner:           sp,
 		statusMsg:         "Ready.",
 		nextID:            1,
@@ -481,7 +481,7 @@ func (m *Model) View() string {
 
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, localView, remoteView)
 
-	queueView := m.queuePane.View()
+	queueView := m.queuePane.View(m.theme, m.loc)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, panes, queueView)
 
