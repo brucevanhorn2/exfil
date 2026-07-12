@@ -16,6 +16,7 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ Transfer queue pane with a capped height (shows the most recent transfers; never grows the layout past the terminal)
 - ✅ Cyberpunk theming; both browser panes force-fill their assigned width/height
 - ✅ About screen (`?`) — ASCII logo, version (via `git describe`, injected by `make build`), license
+- ✅ Selectable lingo packs (`internal/i18n`) and free-form hex theme colors, via a dedicated Settings screen (`S`)
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
 
 **What's genuinely left** (not urgent, not blocking normal use):
@@ -52,7 +53,7 @@ The remote pane defaults to a `LocalFS` rooted at `/` until an SSH connection is
 
 ### Screen state machine (`internal/ui/app.go`)
 
-`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, and `ScreenAbout`. Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
+`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, `ScreenAbout`, and `ScreenSettings`. Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
 
 The browsing screen keeps a **persistent hint bar** (key bindings) separate from `m.statusMsg` (transient messages like "Connected to..." or errors) — don't let transient status overwrite the hints; they're rendered as two separate lines in `View()`.
 
@@ -67,6 +68,10 @@ Located at `~/.config/exfil/hosts.yaml`. Loaded via `config.Load()`, saved via `
 2. Fallback identity files in `~/.ssh`: `id_ed25519`, `id_rsa`, `id_ecdsa` (in that order)
 
 No password/passphrase prompts.
+
+### Lingo packs (`internal/i18n`)
+
+Every user-facing string goes through `loc.T("message_id", args...)` rather than being hardcoded. Four packs — `plain`, `secretsquirrel`, `keyboardcowboy`, `corposlut` — live as embedded YAML catalogs in `internal/i18n/locales/`. `Localizer.T` falls back to `plain` for any key missing from the active pack, then to the raw message ID if even `plain` doesn't have it. Panes don't store `Theme`/`Localizer` at construction — `View()` takes them as parameters — so a Settings-screen change re-themes the whole app immediately without reconstructing anything.
 
 ### Versioning
 

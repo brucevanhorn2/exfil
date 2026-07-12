@@ -27,6 +27,7 @@ Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue,
 - ✅ Live progress reporting with speed calculation
 - ✅ Cyberpunk theming (dark, magenta/cyan/green accents), panes fill the full terminal
 - ✅ About screen (`?`) — logo, version, license
+- ✅ Selectable lingo packs (plain/secretsquirrel/keyboardcowboy/corposlut) and free-form hex theme colors via the Settings screen (`S`)
 - ⏳ Directory copy support
 - ⏳ Delete/rename/mkdir operations
 - ⏳ Multi-host sessions (currently one SSH connection at a time)
@@ -55,6 +56,7 @@ Controls:
 - **→** — push selected file(s) from local to remote
 - **←** — pull selected file(s) from remote to local
 - **s** — open the Site Manager (connect to a saved host; `n` to add, `e` to edit)
+- **S** — Settings (lingo pack, theme colors)
 - **?** — about screen
 - **q** — quit
 
