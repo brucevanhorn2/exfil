@@ -4,104 +4,27 @@
 
 A cyberpunk-themed terminal UI SCP/SFTP client for Linux. Replace `scp` and bloated GUI clients with a fast, local, no-account TUI written in Go.
 
-## MVP Status (as of tonight)
+## Current Status
 
-### Completed (M1-M4 partial)
+The MVP is functionally complete and has been verified end-to-end against a real remote host:
 
-- ✅ Dual-pane local file browser with navigation
-- ✅ File selection and marking
-- ✅ Transfer queue pane with progress bars
-- ✅ Concurrent file copy (worker pool, 3 workers, bounded)
-- ✅ Progress tracking with speed calculation
-- ✅ Cyberpunk theming (dark, color-coded, lipgloss borders)
-- ✅ Filesystem abstraction (LocalFS, RemoteFS ready but not wired)
-- ✅ Config/site manager foundation (config.go loads/saves hosts.yaml)
-- ✅ SSH client foundation (sshclient.go handles agent auth + key fallback)
-- ✅ Transfer engine ready for cross-filesystem ops (RunWithFS accepting src/dst filesystems)
+- ✅ Dual-pane file browser, local and remote (SFTP) — both panes share the same `fsys.FileSystem` interface
+- ✅ SSH/SFTP connection via the Site Manager (`s` to open, `Enter` to connect)
+- ✅ Add/edit hosts from within the app (`n`/`e`), saved to `~/.config/exfil/hosts.yaml`
+- ✅ Directional transfers: `→` pushes local→remote, `←` pulls remote→local, regardless of which pane has focus
+- ✅ Concurrent transfer worker pool (3 workers), live progress bars, speed calculation
+- ✅ Transfer queue pane with a capped height (shows the most recent transfers; never grows the layout past the terminal)
+- ✅ Cyberpunk theming; both browser panes force-fill their assigned width/height
+- ✅ About screen (`?`) — ASCII logo, version (via `git describe`, injected by `make build`), license
+- ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
 
-**What works end-to-end:**
-1. Start the app: `./exfil`
-2. Browse local files with arrow keys
-3. Mark files with space
-4. Press 'c' to copy (queues to transfer queue)
-5. Watch progress bars in real time
-6. Files transfer concurrently (up to 3 at once)
-
-### Not yet complete (M3, M4 final)
-
-**M3 (SSH/SFTP + Site Manager):**
-- Need to wire SSH connection flow (see below)
-- Site manager screen (host picker) is stubbed but not integrated
-- Remote pane should use RemoteFS once SSH connects
-
-**M4 Final (Polish):**
-- Footer key-hints instead of inline status
-- Animation/spinner during SSH dial
-- Full theming pass (dark background ANSI 0, not default)
-
-## Critical Path to Complete MVP
-
-### Step 1: Wire SSH connection in the UI (1-2 hours)
-
-Edit `internal/ui/app.go`:
-
-1. Add a screen state for host picker (already has ScreenHostPicker const)
-2. In `Update`, when screen == ScreenBrowsing and user connects, dial SSH:
-   ```go
-   case "ctrl+s": // or similar trigger
-       return m, m.connectSSH(hostname)
-   ```
-3. Implement `connectSSH()` tea.Cmd that calls `sshclient.Dial()`, returns `sshConnectedMsg`
-4. Handle `sshConnectedMsg` by wrapping sftp.Client in RemoteFS and assigning to remotePane.FS
-
-Example outline (pseudocode):
-```go
-func (m *Model) connectSSH(hostname string) tea.Cmd {
-    return func() tea.Msg {
-        host := config.Host{
-            Hostname: hostname,
-            User: os.Getenv("USER"),
-            Port: 22,
-        }
-        sshClient, sftpClient, err := sshclient.Dial(host)
-        if err != nil {
-            return sshConnectedMsg{err: err}
-        }
-        return sshConnectedMsg{
-            sftpClient: sftpClient,
-            sshClient:  sshClient,
-        }
-    }
-}
-```
-
-5. In transfer.copy.go, the copy logic already calls `RunWithFS(job, events, src, dst)`, so when one pane is remote, just pass RemoteFS as the source or dest.
-
-### Step 2: Integrate host picker screen (~30 min)
-
-Edit `internal/ui/app.go`:
-1. Add hostPickerPane to Model
-2. In View(), render hostPickerPane when screen == ScreenHostPicker
-3. In Update(), handle arrow keys and Enter for the picker
-4. On Enter, trigger connectSSH() for the selected host
-
-The hostpicker.go file already exists with Load(), CurrentHost(), Up(), Down(), View().
-
-### Step 3: Test with wintermute (30 min)
-
-1. Configure a host in ~/.config/exfil/hosts.yaml:
-   ```yaml
-   hosts:
-     - name: wintermute
-       hostname: wintermute.local
-       port: 22
-       user: bruce
-       remote_path: /home/bruce/podcasts/output
-   ```
-2. Start the app, pick wintermute from the host list
-3. Wait for SSH connection (should show spinner)
-4. Right pane should list podcast files
-5. Select and press 'c' to download to local
+**What's genuinely left** (not urgent, not blocking normal use):
+- Directory copy (currently shows "not supported")
+- Delete / rename / mkdir / view-edit operations
+- Multi-host sessions (one SSH connection at a time)
+- Destination pane doesn't auto-refresh after a transfer completes (navigate away and back)
+- Transfer cancellation (Ctrl+C kills the whole app, partial files left on disk)
+- Only one test file exists (`internal/transfer/copy_smoke_test.go`); UI logic (host form validation, path navigation) is undertested
 
 ## Code Patterns & Guidelines
 
@@ -115,62 +38,70 @@ The hostpicker.go file already exists with Load(), CurrentHost(), Up(), Down(), 
 
 ### FileSystem interface
 
-Both panes implement the same fsys.FileSystem interface. This eliminates code duplication:
+Both panes implement the same `fsys.FileSystem` interface. This eliminates code duplication:
 - `ReadDir(path)` → sorted entries
 - `Join(elem...)` → path.Join (POSIX) or filepath.Join (local)
 - `Open/Create` → io.ReadCloser / io.WriteCloser
 - `Stat(path)` → single Entry
 
+The remote pane defaults to a `LocalFS` rooted at `/` until an SSH connection is made (both panes get an initial `Refresh()` in `Model.Init()`), which is what makes local-to-local testing possible without a live host — see README's "Testing locally" section.
+
 ### Transfer progress
 
-ProgressWriter wraps io.Writer, throttles to ~6 msgs/sec, emits TransferProgressMsg. This keeps eventsCh from flooding on fast copies.
+`ProgressWriter` wraps `io.Writer`, throttles to ~6 msgs/sec, emits `TransferProgressMsg`. This keeps `eventsCh` from flooding on fast copies.
+
+### Screen state machine (`internal/ui/app.go`)
+
+`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, and `ScreenAbout`. Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
+
+The browsing screen keeps a **persistent hint bar** (key bindings) separate from `m.statusMsg` (transient messages like "Connected to..." or errors) — don't let transient status overwrite the hints; they're rendered as two separate lines in `View()`.
 
 ### Config (hosts.yaml)
 
-Located at `~/.config/exfil/hosts.yaml`. Loaded via `config.Load()`, saved via `cfg.Save()`. YAML format supports comments.
+Located at `~/.config/exfil/hosts.yaml`. Loaded via `config.Load()`, saved via `cfg.Save()`. YAML format supports comments (though `cfg.Save()`'s `yaml.Marshal` doesn't preserve existing comments on rewrite). Host edits in the UI are keyed by the host's `Name` (not list position), so a stale index can't silently overwrite the wrong entry if the file changes between opening the picker and saving.
 
 ### SSH auth
 
-sshclient.Dial tries:
-1. ssh-agent (via SSH_AUTH_SOCK environment variable)
-2. Fallback identity files in ~/.ssh: id_ed25519, id_rsa, id_ecdsa (in that order)
+`sshclient.Dial` tries:
+1. ssh-agent (via `SSH_AUTH_SOCK` environment variable)
+2. Fallback identity files in `~/.ssh`: `id_ed25519`, `id_rsa`, `id_ecdsa` (in that order)
 
 No password/passphrase prompts.
 
+### Versioning
+
+`internal/version.Version` defaults to `"dev"`; `make build` overrides it via `-ldflags` with `git describe --tags --always --dirty`. Shown on the About screen (`?`). No git tags exist yet — tag `v0.1.0` when ready to cut a first real release.
+
 ## Known Limitations
 
-- Only one SSH connection per session (could extend with connection pool, but MVP is single host at a time)
 - Directories can't be copied (shows "not supported")
 - No delete, rename, mkdir, view/edit
 - No 1Password integration (explicitly deferred by user)
-- Transfer cancellation not implemented (Ctrl+C kills the app, partial files left on disk)
-
-## Files to Touch for Completion
-
-1. **internal/ui/app.go** — Add host picker screen routing, SSH connect flow
-2. **internal/ui/hostpicker.go** — Already stubbed, just hook up to app
-3. **cmd/exfil/main.go** — Might need to pass additional state (currently OK)
+- Transfer cancellation not implemented
+- Only one SSH connection per session
 
 ## Testing
 
-Run the local copy test (one-shot):
 ```bash
-go run test-local-copy.go  # (if test file exists)
+make build
+./exfil
 ```
 
-Or manually:
-1. `./exfil`
-2. Create test dirs: `mkdir -p /tmp/test/{src,dst}`
-3. Put a file in src: `echo hi > /tmp/test/src/file.txt`
-4. In app, navigate both panes to /tmp/test (left=src, right=dst)
-5. Mark file, press 'c'
-6. Watch progress bar, file should appear in dst/
+To test transfers without SSH (remote pane defaults to local filesystem at `/`):
+```bash
+mkdir -p /tmp/exfil-test/{a,b}
+echo hi > /tmp/exfil-test/a/file.txt
+# Navigate local pane to /tmp/exfil-test/a, remote pane to /tmp/exfil-test/b
+# Select file.txt, press '→' to copy it across
+```
+
+CI runs `go build`, `go vet`, and a `gofmt` check on every push to `master`.
 
 ## Performance Notes
 
-- Transfer speed is IO-bound, not CPU-bound (progress is very fast for local disk, slower on LAN)
+- Transfer speed is IO-bound, not CPU-bound
 - 3 concurrent workers is a good balance; can increase if needed
-- Progress message throttle (150ms) prevents UI refresh thrashing
+- Progress message throttle (~150ms) prevents UI refresh thrashing
 - SFTP is single TCP connection multiplexed by request ID (safe for concurrent ops from multiple goroutines)
 
 ## Future Extensions (Post-MVP)
@@ -183,3 +114,4 @@ Or manually:
 - Mouse support for pane clicking
 - Search/filter files
 - Stat view (permissions, owner, timestamps)
+- Auto-refresh the destination pane after a transfer completes

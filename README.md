@@ -1,5 +1,10 @@
 # exfil — cyberpunk TUI SCP/SFTP client
 
+[![CI](https://github.com/brucevanhorn2/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/brucevanhorn2/exfil/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+![exfil screenshot](assets/exfil-screenshot.png)
+
 A terminal-based file transfer client for Linux (Ubuntu/Pop_OS) built with Go, Bubbletea, and Lipgloss.
 
 **📖 Documentation:**
@@ -8,32 +13,32 @@ A terminal-based file transfer client for Linux (Ubuntu/Pop_OS) built with Go, B
 - **[Implementation notes](CLAUDE.md)** — Detailed status, code patterns, critical path
 - **[GitHub issues](https://github.com/brucevanhorn2/exfil/issues)** — Roadmap and task tracking
 
-## MVP Status
+## Status
 
-**Current (M1-M4 partial):** Local file browsing and copying with a live transfer queue and progress bars.
+Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue, progress bars, and host management — all working end-to-end.
 
-- ✅ Dual-pane file browser (left=local, right=local for MVP testing)
-- ✅ Transfer queue pane with progress bars
-- ✅ File navigation (up/down/enter/backspace)
-- ✅ File selection (space to toggle)
-- ✅ Copy operations (local-to-local for testing; ready for SFTP)
+- ✅ Dual-pane file browser (local ↔ remote over SFTP)
+- ✅ SSH/SFTP connection via the Site Manager (`s` to open, saved hosts in `hosts.yaml`)
+- ✅ Add/edit hosts from within the app (`n`/`e` in the Site Manager)
+- ✅ Transfer queue pane with progress bars, capped height so it never pushes the layout off-screen
+- ✅ File navigation (↑/↓/Enter/Backspace), selection (Space, shows a persistent checkbox)
+- ✅ Directional transfers: **→** pushes local→remote, **←** pulls remote→local, regardless of pane focus
 - ✅ Concurrent transfer worker pool (3 workers, bounded concurrency)
 - ✅ Live progress reporting with speed calculation
-- ✅ Cyberpunk theming (dark, magenta/cyan/green accents)
-
-**Not yet complete (M3, M4 final):**
-
-- ⏳ SSH/SFTP connection integration
-- ⏳ Site manager (saved host profiles)
-- ⏳ Remote pane wiring to SFTP filesystem
-- ⏳ Full theming pass and footer key-hints
+- ✅ Cyberpunk theming (dark, magenta/cyan/green accents), panes fill the full terminal
+- ✅ About screen (`?`) — logo, version, license
+- ⏳ Directory copy support
+- ⏳ Delete/rename/mkdir operations
+- ⏳ Multi-host sessions (currently one SSH connection at a time)
 
 ## Building
 
 ```bash
 cd /home/bruce/Projects/exfil
-go build -o exfil ./cmd/exfil
+make build
 ```
+
+This embeds a version string from `git describe` (shown on the About screen). A plain `go build -o exfil ./cmd/exfil` also works but leaves the version as `dev`.
 
 ## Running
 
@@ -47,7 +52,10 @@ Controls:
 - **Enter** — enter directory
 - **Backspace** — go back to parent directory
 - **Space** — toggle select file
-- **c** — copy selected files to other pane
+- **→** — push selected file(s) from local to remote
+- **←** — pull selected file(s) from remote to local
+- **s** — open the Site Manager (connect to a saved host; `n` to add, `e` to edit)
+- **?** — about screen
 - **q** — quit
 
 ## Architecture
@@ -88,55 +96,37 @@ type FileSystem interface {
 
 `LocalFS` uses `os.ReadDir`, `filepath.Join`, etc. `RemoteFS` wraps an `*sftp.Client` using SFTP protocol calls.
 
-## Next steps for completing the MVP
+## Host management
 
-### 1. Wire up SSH/SFTP (M3)
+Hosts are stored in `~/.config/exfil/hosts.yaml` (YAML, supports comments). You can edit it by hand, or manage it entirely from within the app:
 
-In `internal/ui/app.go`, add:
-- Host picker screen (already stubbed in `hostpicker.go`)
-- SSH connection flow triggered on "connect" from picker
-- `sshConnectedMsg` handler that wires up `RemoteFS` to the right pane
-- Switch panes to use appropriate `FileSystem` (local vs. remote)
+- **s** — open the Site Manager
+- **n** — add a new host (Tab/Shift+Tab between fields, Enter to save)
+- **e** — edit the selected host
+- **Enter** — connect to the selected host
 
-The `sshclient.Dial` function already supports:
-- ssh-agent for key auth
-- Fallback identity files (`~/.ssh/id_ed25519`, `id_rsa`, `id_ecdsa`)
-- No password/passphrase prompts
-
-### 2. Site manager (M3)
-
-`config.Load()` / `config.Save()` already work against `~/.config/exfil/hosts.yaml`. Need to add:
-- Host picker navigation and display (UI part of M3)
-- "Add host" form (minimal `bubbles/textinput` fields, save to YAML)
-- "Connect ad hoc" flow for one-off hosts
-
-### 3. Theming and polish (M5)
-
-Already has baseline theme, but could add:
-- Footer key-hints instead of inline status
-- Rounded borders on focused pane only
-- Dark background (ANSI color "0" instead of default)
-- Animation/spinner during SSH connect
+`sshclient.Dial` authenticates via ssh-agent first, then falls back to `~/.ssh/id_ed25519`, `id_rsa`, `id_ecdsa` in that order. No password/passphrase prompts.
 
 ## Testing locally
 
-To test the transfer queue without SSH, use both panes as local directories:
+The remote pane defaults to browsing the local filesystem (rooted at `/`) until you connect to a host, so you can test transfers without SSH:
 
 ```bash
 mkdir -p /tmp/exfil-test/{a,b}
 echo "test content" > /tmp/exfil-test/a/file1.txt
-# In the app, navigate both panes to /tmp/exfil-test
-# Left pane: /a, Right pane: /b
-# Select file1.txt in left, press 'c' to copy to right
+# In the app, navigate the local (left) pane to /tmp/exfil-test/a
+# Navigate the remote (right) pane to /tmp/exfil-test/b
+# Select file1.txt in the left pane, press '→' to copy it to the right
 ```
 
-## Known limitations (MVP scope)
+## Known limitations
 
 - Directories cannot be copied (shows "not supported" message)
 - Single SSH connection per session (no switching between hosts mid-run)
 - No delete, rename, mkdir, or view/edit operations
 - No 1Password integration
 - No recursive directory sync
+- Destination pane listing doesn't auto-refresh after a transfer completes (navigate away and back to see the new file)
 
 ## Logs
 

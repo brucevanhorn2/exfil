@@ -6,18 +6,21 @@
 
 **What it is:** A cyberpunk terminal UI SCP/SFTP client in Go. User wanted to stop using `scp` and bloated GUI clients to move files between machines (wintermute ↔ laptop).
 
-**Current state:** MVP works locally (dual-pane file browser, transfer queue with progress bars, concurrent file copy). **Ready for SSH integration** — all the hard parts done, just needs UI wiring.
+**Current state:** MVP is functionally complete and verified end-to-end against a real remote host (SSH connect, host add/edit, directional transfers, live progress).
 
 **What works now:**
 ```bash
-./exfil                    # Launches TUI
-# Navigate left/right panes, mark files with space, press 'c' to copy
-# Watch progress bars update in real time as 3 concurrent workers copy files
+make build
+./exfil
+# 's' to open the Site Manager, pick a saved host, Enter to connect
+# Navigate panes with Tab/↑/↓/Enter/Backspace, mark files with Space
+# '→' pushes selected file(s) local→remote, '←' pulls remote→local
+# '?' opens an About screen (logo, version, license)
 ```
 
-**What's incomplete:** Remote panes don't connect to SSH yet. Everything else is done.
+**What's left:** Directory copy, delete/rename/mkdir, multi-host sessions, auto-refresh of the destination pane after a transfer, and broader test coverage. None of these block normal single-host file transfer use.
 
-**GitHub issues:** See https://github.com/brucevanhorn2/exfil/issues for the full roadmap. Issues #1–3 are the critical path to MVP completion.
+**GitHub issues:** See https://github.com/brucevanhorn2/exfil/issues — treat as historical/roadmap notes; the SSH-wiring issues referenced there are done.
 
 ---
 
@@ -71,24 +74,23 @@ type FileSystem interface {
 - `LocalFS` — wraps `os.ReadDir`, `filepath.Join`, `os.Open`/`os.Create`
 - `RemoteFS` — wraps `sftp.Client.ReadDir`, `path.Join`, `client.Open`/`client.Create` (POSIX paths)
 
-**Why this matters:** The browser pane code (`internal/ui/browser.go`) doesn't know or care which filesystem it's browsing. This eliminates ~200 lines of duplicated UI code.
+**Why this matters:** The browser pane code (`internal/ui/browser.go`) doesn't know or care which filesystem it's browsing.
 
-**For SSH integration:** Once M3 is done, the remote pane will just be instantiated with `RemoteFS` instead of `LocalFS`. No UI changes needed.
+**How SSH wiring actually works** (`internal/ui/app.go`):
+- `Model.Init()` refreshes both panes at startup — local pane with `LocalFS`, remote pane also with `LocalFS` rooted at `/` (lets you test transfers locally, see README)
+- Pressing `s` opens the Site Manager (`HostPickerPane`); `Enter` on a host triggers `connectSSH()`, a `tea.Cmd` that dials off the UI thread and returns an `sshConnectedMsg`
+- On success, `sshConnectedMsg`'s handler wraps the `*sftp.Client` in a `RemoteFS` and assigns it to `m.remotePane.FS`, then kicks off an async `readDirCmd` to list the configured `remote_path`
+- From then on the remote pane behaves identically to local — same `BrowserPane`, same key handlers, same transfer engine
 
-### Transfer Engine — Ready for Cross-Filesystem Copies
-
-`transfer.Run()` does local-only copy. But it has a sibling:
+### Transfer Engine — Cross-Filesystem Copies
 
 ```go
 func RunWithFS(job Job, events chan tea.Msg, src FileSystem, dst FileSystem)
 ```
 
-**How it's used:**
-- MVP: `Run()` → calls `RunWithFS(job, events, LocalFS{}, LocalFS{})`
-- SSH future: `RunWithFS(job, events, RemoteFS{sftp}, LocalFS{})` for download
-- SSH future: `RunWithFS(job, events, LocalFS{}, RemoteFS{sftp})` for upload
+`enqueueCopyDirection(srcPane, dstPane *BrowserPane)` in `app.go` builds a `transfer.Job` carrying each pane's `FS`, so the worker doesn't need to know whether it's a local copy, upload, or download — it just calls `Open` on `src` and `Create` on `dst`.
 
-**Progress tracking:** `progressWriter` wraps the destination, throttles to ~6 msgs/sec, emits `TransferProgressMsg`. This prevents message flooding on fast copies.
+**Progress tracking:** `progressWriter` wraps the destination, throttles to ~6 msgs/sec, emits `TransferProgressMsg`.
 
 ---
 
@@ -96,22 +98,20 @@ func RunWithFS(job Job, events chan tea.Msg, src FileSystem, dst FileSystem)
 
 ### Prerequisites
 ```bash
-go 1.23+ (or whatever's in go.mod)
-SSH keys in ~/.ssh (id_ed25519, id_rsa, or id_ecdsa)
+go 1.26+ (see go.mod)
+SSH keys in ~/.ssh (id_ed25519, id_rsa, or id_ecdsa) — for remote connections
 ssh-agent running (optional, but preferred)
 ```
 
 ### Build
 ```bash
 cd /home/bruce/Projects/exfil
-go build -o exfil ./cmd/exfil
+make build   # embeds version via git describe; plain `go build` leaves it as "dev"
 ```
 
-### Run locally (no SSH)
+### Run
 ```bash
 ./exfil
-# Navigate with arrow keys, mark with space, copy with 'c'
-# Both panes start as local filesystems for testing
 ```
 
 ### Logs
@@ -121,31 +121,29 @@ tail -f /tmp/exfil.log
 
 ---
 
-## Testing Without SSH (Recommended Starting Point)
+## Testing Without SSH
 
-### Local copy test
+The remote pane defaults to a local filesystem at `/` until you connect, so local-to-local testing works out of the box:
+
 ```bash
 mkdir -p /tmp/test/{src,dst}
 echo "test file" > /tmp/test/src/testfile.txt
 
-# Launch app
 ./exfil
-# Navigate left pane to /tmp/test/src
-# Navigate right pane to /tmp/test/dst
-# Mark testfile.txt with space, press 'c'
-# Watch progress bar in bottom pane
-# File appears in dst/ once done
+# Navigate local (left) pane to /tmp/test/src
+# Navigate remote (right) pane to /tmp/test/dst
+# Space to select testfile.txt, '→' to push it across
+# Watch the progress bar in the Transfer Queue pane
 ```
 
-### Verify file integrity
+Verify integrity:
 ```bash
 sha256sum /tmp/test/src/testfile.txt /tmp/test/dst/testfile.txt
-# Should match
 ```
 
 ---
 
-## Code Structure (Where Everything Lives)
+## Code Structure
 
 ```
 exfil/
@@ -153,90 +151,73 @@ exfil/
 ├── internal/
 │   ├── config/config.go           # Site manager (hosts.yaml Load/Save)
 │   ├── sshclient/client.go        # SSH dial (agent auth + key fallback)
+│   ├── version/version.go         # Build-time version string (set via -ldflags)
 │   ├── fsys/
 │   │   ├── fsys.go                # FileSystem interface
 │   │   ├── local.go               # LocalFS implementation
 │   │   └── remote.go              # RemoteFS implementation (wraps sftp.Client)
 │   ├── transfer/
 │   │   ├── types.go               # Job struct, Direction enum
-│   │   ├── queue.go               # StartWorkers() — spawns 3 goroutines
-│   │   └── copy.go                # Run/RunWithFS — transfer engine + progress
+│   │   ├── queue.go                # StartWorkers() — spawns 3 goroutines
+│   │   ├── copy.go                # Run/RunWithFS — transfer engine + progress
+│   │   └── copy_smoke_test.go     # Only test file in the repo so far
 │   └── ui/
-│       ├── app.go                 # Model (Bubbletea), Update/View, messages
+│       ├── app.go                 # Model (Bubbletea), Update/View, screen routing
 │       ├── browser.go             # BrowserPane — reused for local & remote
-│       ├── queuepane.go           # QueuePane — transfer queue display
-│       ├── hostpicker.go          # HostPickerPane — saved hosts screen (not wired yet)
+│       ├── queuepane.go           # QueuePane — transfer queue display (height-capped)
+│       ├── hostpicker.go          # HostPickerPane — Site Manager screen
+│       ├── hostform.go            # HostFormPane — add/edit host form
+│       ├── about.go               # AboutPane — logo/version/license screen
 │       └── theme.go               # Cyberpunk color scheme
-└── README.md                       # User-facing docs
+├── .github/workflows/ci.yml       # build + go vet + gofmt check
+├── Makefile                       # `make build` injects version via ldflags
+├── LICENSE                        # MIT
+└── README.md                      # User-facing docs
 ```
 
 **The critical files for understanding:**
 1. `cmd/exfil/main.go` — Concurrency setup
-2. `internal/ui/app.go` — State machine & message handling
+2. `internal/ui/app.go` — State machine & message handling (the biggest file, start here)
 3. `internal/transfer/copy.go` — Transfer logic
 4. `internal/fsys/fsys.go` — Why the abstraction matters
 
 ---
 
-## How to Pick Up Work (GitHub Issues)
+## What's Actually Left (Pick Up Here)
 
-### Issues #1–3 (MVP Critical Path)
+None of these block normal use; pick whichever matches what you're asked to do:
 
-**[#1] SSH/SFTP connection wiring:**
-- Add `connectSSH()` tea.Cmd in `app.go`
-- Call `sshclient.Dial()` → wraps result in RemoteFS
-- Assign to `m.remotePane.FS`
-- Show spinner while dialing
-- **Est. 1–2 hours**
-
-**[#2] Host picker screen:**
-- Add `hostPickerPane` to Model
-- Route between screens (ScreenBrowsing vs ScreenHostPicker)
-- Render & handle keys (↑/↓/Enter)
-- Trigger `connectSSH()` on selection
-- **Est. 30–45 min**
-
-**[#3] Polish & theming:**
-- Dark background (ANSI 0)
-- Connection spinner
-- Footer key-hints
-- **Est. 30–60 min**
-
-Once these three are done, the MVP is complete and functional for the user's original use case (moving podcast files from wintermute).
-
-### Issues #4+ (Post-MVP)
-
-These are enhancements and deferred scope. Start with #1–3 first.
+1. **Directory copy support** — currently `enqueueCopyDirection` in `app.go` skips directories with a "not supported" status message.
+2. **Delete/rename/mkdir/view-edit** — not implemented at all.
+3. **Multi-host sessions** — `Model` holds a single `*ssh.Client`/`*sftp.Client`; switching hosts mid-session isn't supported.
+4. **Auto-refresh after transfer** — `transfer.TransferDoneMsg`'s handler in `app.go` has a `// TODO (M4)` comment; the destination pane doesn't reload its listing when a transfer completes.
+5. **Test coverage** — only `internal/transfer/copy_smoke_test.go` exists. Good next targets: `HostFormPane.buildHost()` validation, `BrowserPane.Back()` path logic, `BrowserPane.ensureVisible()` scrolling.
+6. **Transfer cancellation** — Ctrl+C kills the whole app; partial files are left on disk.
 
 ---
 
 ## Common Gotchas & Debugging
-
-### "Unknown message: struct { ID int; Filename string; Total int64 }"
-
-This is the transfer-started message type. It's benign — the UI doesn't need to handle it, workers send it to announce the transfer. If you see this in logs, it's not an error.
 
 ### Transfer appears queued but never runs
 
 Check:
 - `jobsCh` is passed to Model (see `main.go`)
 - Workers are started before `tea.NewProgram()` (see `main.go`)
-- `enqueueCopy()` sends to `m.jobsCh` (see `app.go`)
-- Transfer message types are imported from `transfer` package (see imports in `app.go`)
+- `enqueueCopyDirection()` sends to `m.jobsCh` (see `app.go`)
 
 ### UI freezes during SSH connect
 
-The SSH dial runs as a `tea.Cmd` in its own goroutine. The UI should stay responsive. If it freezes:
-- Check that `sshclient.Dial()` isn't blocking on something (key passphrase prompt, network timeout)
-- Add a timeout to the SSH dial
-- Check logs in `/tmp/exfil.log`
+The SSH dial runs as a `tea.Cmd` in its own goroutine, so the UI should stay responsive. If it freezes, check `sshclient.Dial()` for a blocking passphrase prompt or slow DNS/network, and check `/tmp/exfil.log`.
 
 ### Remote pane shows nothing after "connecting"
 
 Likely causes:
 - SSH auth failed silently → check logs
-- RemoteFS not wired up correctly → check `sshConnectedMsg` handler in `app.go`
-- SFTP listdir failed on remote path → check that path exists on remote
+- `remote_path` in `hosts.yaml` doesn't exist on the remote → `readDirCmd` will report the error in `m.statusMsg`
+
+### Editing a host doesn't save the right one
+
+Shouldn't happen — `HostFormPane` keys edits off the host's original `Name`, not list position, specifically to avoid this. If you see it, check `HostFormPane.Save()` in `hostform.go`.
 
 ---
 
@@ -246,47 +227,19 @@ Likely causes:
 |----------|-----------|
 | **Bubbletea + Lipgloss** | Elm architecture is perfect for TUI state machines. Lipgloss handles styling. |
 | **CSP concurrency (no mutexes)** | Simpler, safer, easier to reason about. Workers & UI never fight over state. |
-| **FileSystem interface** | Single pane code works for local or remote. Swaps at config time, not runtime. |
+| **FileSystem interface** | Single pane code works for local or remote. Swaps at connect time, not compile time. |
 | **3 concurrent workers** | Good balance: enough parallelism, not too many goroutines. Bounded by channel recv. |
 | **SSH-agent first, keys second** | Matches user's existing SSH setup. No extra secrets to manage. |
 | **YAML config (not JSON)** | Supports comments. Humans can edit `~/.config/exfil/hosts.yaml` by hand. |
-| **No password prompts** | MVP requirement: set up keys once, use many times. Agent or key files only. |
+| **No password prompts** | Set up keys once, use many times. Agent or key files only. |
+| **Edit-by-name, not by-index** | A positional index into the host list can go stale if the file changes between load and save; name lookup can't silently corrupt the wrong entry. |
+| **Fixed-direction arrow transfers** | `→`/`←` always mean local→remote/remote→local regardless of pane focus — more predictable than focus-dependent direction. |
 
 ---
 
 ## If You Get Stuck
 
-1. **Check CLAUDE.md** — More detailed implementation notes, patterns, pseudocode
-2. **Check GitHub issues** — The issues have acceptance criteria and design context
-3. **Read the code** — It's well-structured and intentional. Comments explain the "why"
-4. **Check logs** — `/tmp/exfil.log` has detailed errors from workers
-5. **Test locally first** — Verify local copy works before trying SSH
-
----
-
-## Success Criteria for MVP Completion
-
-When these are true, the MVP is done:
-
-- [ ] App starts and shows host picker screen
-- [ ] User selects wintermute from saved hosts
-- [ ] SSH connects (spinner shown during dial)
-- [ ] Remote pane lists real files from `/home/bruce/podcasts/output` on wintermute
-- [ ] User can mark audio files and press 'c' to queue download
-- [ ] Transfer queue shows progress bars
-- [ ] Files appear in local destination pane as they complete
-- [ ] `sha256sum` of downloaded files matches source
-- [ ] No crashes on disconnect or interrupt
-
----
-
-## Next Steps (For You, Right Now)
-
-1. Pick up **issue #1** (SSH wiring) — it unblocks #2 and #3
-2. Read `internal/sshclient/client.go` to understand the dial flow
-3. Read `internal/ui/app.go` to understand where to add `connectSSH()`
-4. Refer to the pseudocode in CLAUDE.md for the rough implementation
-5. Wire it up, test locally first (should still work), then test against wintermute
-6. Once #1 works, #2 and #3 are straightforward plumbing
-
-Good luck! This is a well-scoped project with clean architecture. You've got this.
+1. **Check CLAUDE.md** — implementation notes, patterns, current known limitations
+2. **Read the code** — it's well-structured and intentional; comments explain the "why," not the "what"
+3. **Check logs** — `/tmp/exfil.log` has detailed errors from workers
+4. **Test locally first** — verify local-to-local transfer works before troubleshooting SSH
