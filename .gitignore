@@ -1,0 +1,4 @@
+/exfil
+*.log
+*.test
+*.out
