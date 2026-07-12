@@ -30,6 +30,13 @@ func parseHexColor(s string) (lipgloss.Color, error) {
 }
 
 type Theme struct {
+	// Raw color values, needed by gradientBox/gradientText (a lipgloss.Style
+	// only holds one flat color, not enough to interpolate a gradient from).
+	PrimaryColor        lipgloss.Color
+	SecondaryColor      lipgloss.Color
+	MutedPrimaryColor   lipgloss.Color // PrimaryColor blended 50% toward black
+	MutedSecondaryColor lipgloss.Color // SecondaryColor blended 50% toward black
+
 	// Pane borders
 	PaneBorder      lipgloss.Style
 	PaneBorderFocus lipgloss.Style
@@ -65,6 +72,11 @@ type Theme struct {
 // done, and error — rather than being purely aesthetic.
 func NewTheme(primary, secondary lipgloss.Color) Theme {
 	return Theme{
+		PrimaryColor:        primary,
+		SecondaryColor:      secondary,
+		MutedPrimaryColor:   mutedColor(primary),
+		MutedSecondaryColor: mutedColor(secondary),
+
 		// Pane borders
 		PaneBorder: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
