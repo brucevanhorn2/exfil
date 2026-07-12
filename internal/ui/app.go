@@ -91,7 +91,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	theme := NewTheme()
+	theme := NewTheme(lipgloss.Color(DefaultPrimaryColor), lipgloss.Color(DefaultSecondaryColor))
 	localFS := fsys.LocalFS{}
 	home, _ := localFS.Home()
 

@@ -1,8 +1,33 @@
 package ui
 
 import (
+	"fmt"
+	"regexp"
+
 	"github.com/charmbracelet/lipgloss"
 )
+
+// DefaultPrimaryColor and DefaultSecondaryColor are used when hosts.yaml has
+// no saved color choices yet (a fresh install) or an invalid one (hand-edited
+// YAML) — matching exfil's original magenta/gray look, but as precise
+// true-color hex instead of a 16-color ANSI approximation.
+const (
+	DefaultPrimaryColor   = "#B341F5"
+	DefaultSecondaryColor = "#6E6E6E"
+)
+
+var hexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
+// parseHexColor validates s as a "#RRGGBB" hex color and returns it as a
+// lipgloss.Color. Used for user-supplied colors (Settings screen input, or
+// values loaded from hosts.yaml) so invalid input can be caught and reported
+// rather than silently misrendering.
+func parseHexColor(s string) (lipgloss.Color, error) {
+	if !hexColorPattern.MatchString(s) {
+		return "", fmt.Errorf("%q is not a valid hex color (expected format #RRGGBB)", s)
+	}
+	return lipgloss.Color(s), nil
+}
 
 type Theme struct {
 	// Pane borders
@@ -33,27 +58,32 @@ type Theme struct {
 	StatusError lipgloss.Style
 }
 
-func NewTheme() Theme {
+// NewTheme builds the theme from a user-selectable primary color (focus
+// borders/titles, selection background, progress bar, status values) and
+// secondary color (unfocused borders/titles, queue chrome, queued-status
+// text). Cyan/green/red stay fixed here since they carry meaning — running,
+// done, and error — rather than being purely aesthetic.
+func NewTheme(primary, secondary lipgloss.Color) Theme {
 	return Theme{
 		// Pane borders
 		PaneBorder: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("8")).
+			BorderForeground(secondary).
 			Foreground(lipgloss.Color("7")).
 			Padding(0, 1),
 
 		PaneBorderFocus: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("5")).
+			BorderForeground(primary).
 			Foreground(lipgloss.Color("7")).
 			Padding(0, 1),
 
 		PaneTitle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")).
+			Foreground(secondary).
 			Bold(true),
 
 		PaneTitleFocus: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("5")).
+			Foreground(primary).
 			Bold(true),
 
 		// Browser items
@@ -65,7 +95,7 @@ func NewTheme() Theme {
 			Foreground(lipgloss.Color("7")),
 
 		BrowserSelected: lipgloss.NewStyle().
-			Background(lipgloss.Color("5")).
+			Background(primary).
 			Foreground(lipgloss.Color("0")),
 
 		BrowserCursor: lipgloss.NewStyle().
@@ -75,15 +105,15 @@ func NewTheme() Theme {
 		// Queue
 		QueueBorder: lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("8")).
+			BorderForeground(secondary).
 			Padding(0, 1),
 
 		QueueTitle: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")).
+			Foreground(secondary).
 			Bold(true),
 
 		TransferQueued: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")),
+			Foreground(secondary),
 
 		TransferRunning: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("6")),
@@ -95,7 +125,7 @@ func NewTheme() Theme {
 			Foreground(lipgloss.Color("1")),
 
 		ProgressBar: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("5")),
+			Foreground(primary),
 
 		// Status bar
 		StatusBar: lipgloss.NewStyle().
@@ -106,7 +136,7 @@ func NewTheme() Theme {
 			Bold(true),
 
 		StatusValue: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("5")),
+			Foreground(primary),
 
 		StatusError: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("1")),
