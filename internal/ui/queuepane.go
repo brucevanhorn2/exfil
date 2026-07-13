@@ -96,8 +96,8 @@ func (q *QueuePane) View(theme Theme, loc *i18n.Localizer) string {
 	// title row is already baked into content (same accounting as
 	// BrowserPane.View()) — q.Height-2 keeps the total rendered size at
 	// q.Height. Width needs no such adjustment — q.Width passes straight
-	// through, matching the old border.Width(q.Width) call's own total
-	// rendered width (q.Width+2, since QueueBorder already carries
+	// through, matching the pre-gradient flat-styled border's own total
+	// rendered width (q.Width+2, since that style already carried
 	// Padding(0, 1) baked into that budget) exactly.
 	return gradientBox(content, q.Width, q.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }

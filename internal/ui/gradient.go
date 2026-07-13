@@ -85,8 +85,9 @@ func mutedColor(c lipgloss.Color) lipgloss.Color {
 //
 // Width wraps overflowing lines (via lipgloss's own Width(), which also
 // pads every resulting physical line to exactly the requested width while
-// preserving embedded ANSI styling) — the same reflow every pane already
-// relies on today via `theme.PaneBorder.Width(...).Render(...)`. Height is
+// preserving embedded ANSI styling) — the same reflow every pane relied on
+// pre-gradient, via a flat-colored `lipgloss.Style` with Width()/Border()
+// set directly. Height is
 // a floor, not a ceiling: content shorter than height is padded with blank
 // rows, but content already taller is never truncated — matching
 // lipgloss.Style.Height()'s real behavior (verified empirically: a

@@ -56,5 +56,7 @@ func (a *AboutPane) View(theme Theme, loc *i18n.Localizer) string {
 	}
 
 	content := strings.Join(lines, "\n")
+	// -2: gradientBox's height convention is interior rows only (a.Width
+	// needs no such adjustment), matching every other pane's accounting.
 	return gradientBox(content, a.Width, a.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }

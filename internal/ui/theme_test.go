@@ -39,8 +39,8 @@ func TestNewThemeAppliesPrimaryAndSecondary(t *testing.T) {
 	if theme.BrowserSelected.GetBackground() != primary {
 		t.Errorf("BrowserSelected background = %v, want %v", theme.BrowserSelected.GetBackground(), primary)
 	}
-	if theme.QueueTitle.GetForeground() != secondary {
-		t.Errorf("QueueTitle foreground = %v, want %v", theme.QueueTitle.GetForeground(), secondary)
+	if theme.TransferQueued.GetForeground() != secondary {
+		t.Errorf("TransferQueued foreground = %v, want %v", theme.TransferQueued.GetForeground(), secondary)
 	}
 }
 
