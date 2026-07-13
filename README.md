@@ -1,7 +1,9 @@
-# exfil — cyberpunk TUI SCP/SFTP client
+# exfil — scp client for edgerunners, keyboard cowboys, and corposluts alike
 
 [![CI](https://github.com/brucevanhorn2/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/brucevanhorn2/exfil/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+![exfil about screen](assets/exfil-about.png)
 
 ![exfil screenshot](assets/exfil-screenshot.png)
 
