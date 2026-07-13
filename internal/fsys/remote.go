@@ -54,6 +54,18 @@ func (rfs *RemoteFS) Create(path string) (io.WriteCloser, error) {
 	return rfs.client.Create(path)
 }
 
+func (rfs *RemoteFS) Remove(path string) error {
+	return rfs.client.Remove(path)
+}
+
+func (rfs *RemoteFS) Rename(oldPath, newPath string) error {
+	return rfs.client.Rename(oldPath, newPath)
+}
+
+func (rfs *RemoteFS) Mkdir(path string) error {
+	return rfs.client.Mkdir(path)
+}
+
 func (rfs *RemoteFS) Stat(path string) (*Entry, error) {
 	info, err := rfs.client.Stat(path)
 	if err != nil {

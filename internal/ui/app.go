@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/user"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/bvanhorn/exfil/internal/config"
@@ -22,11 +24,13 @@ import (
 type Screen string
 
 const (
-	ScreenBrowsing   Screen = "browsing"
-	ScreenHostPicker Screen = "hostpicker"
-	ScreenAddHost    Screen = "addhost"
-	ScreenAbout      Screen = "about"
-	ScreenSettings   Screen = "settings"
+	ScreenBrowsing      Screen = "browsing"
+	ScreenHostPicker    Screen = "hostpicker"
+	ScreenAddHost       Screen = "addhost"
+	ScreenAbout         Screen = "about"
+	ScreenSettings      Screen = "settings"
+	ScreenPrompt        Screen = "prompt"
+	ScreenConfirmDelete Screen = "confirmdelete"
 )
 
 // Messages
@@ -59,8 +63,20 @@ type Model struct {
 	aboutPane         *AboutPane
 	settingsPane      *SettingsPane
 	queuePane         *QueuePane
+	promptPane        *PromptPane
+	confirmPane       *ConfirmPane
 	statusMsg         string
 	nextID            int
+
+	// promptMode/promptPaneName/promptOldName carry context for ScreenPrompt
+	// between the browsing-screen key that opened it (r/m) and Enter's
+	// handling in handlePromptKey — mirrors confirmDelete* below for delete.
+	promptMode     string // "rename" or "mkdir"
+	promptPaneName string // "local" or "remote": which BrowserPane the op targets
+	promptOldName  string // only used for rename
+
+	confirmDeleteNames    []string
+	confirmDeletePaneName string
 	// transferDest maps an in-flight transfer's ID to which pane ("local" or
 	// "remote") it's copying into, so TransferDoneMsg knows which pane to
 	// refresh. Entries are removed once the transfer finishes or errors.
@@ -147,6 +163,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 	hostForm := NewHostFormPane()
 	aboutPane := NewAboutPane()
 	settingsPane := NewSettingsPane()
+	promptPane := NewPromptPane()
 
 	m := &Model{
 		screen:            ScreenBrowsing,
@@ -163,6 +180,8 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		hostForm:          hostForm,
 		aboutPane:         aboutPane,
 		settingsPane:      settingsPane,
+		promptPane:        promptPane,
+		confirmPane:       &ConfirmPane{},
 		queuePane:         NewQueuePane(),
 		spinner:           sp,
 		statusMsg:         loc.T("status_ready"),
@@ -230,6 +249,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen == ScreenSettings {
 			return m.handleSettingsKey(msg)
+		}
+		if m.screen == ScreenPrompt {
+			return m.handlePromptKey(msg)
+		}
+		if m.screen == ScreenConfirmDelete {
+			return m.handleConfirmDeleteKey(msg)
 		}
 		return m.handleBrowsingKey(msg)
 
@@ -306,6 +331,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
 		m.popTransferDest(msg.ID)
 		return m, waitForEvent(m.eventsCh)
+
+	case fileOpDoneMsg:
+		switch {
+		case errors.Is(msg.err, errRenameTargetExists):
+			m.statusMsg = m.loc.T("status_rename_exists")
+		case msg.err != nil:
+			m.statusMsg = m.loc.T(fileOpErrorKey(msg.action), msg.err)
+		default:
+			m.statusMsg = m.loc.T(fileOpSuccessKey(msg.action))
+		}
+		// Refresh regardless of error/success: a delete of several marked
+		// files can partially succeed before hitting an error, so the
+		// listing may be stale either way. Done via readDirCmd (off the UI
+		// thread), matching TransferDoneMsg just above — Refresh() is a
+		// network round-trip for the remote/SFTP pane and would otherwise
+		// block the whole TUI on Update()'s goroutine.
+		pane := m.paneByName(msg.pane)
+		return m, readDirCmd(msg.pane, pane.FS, pane.Cwd)
 	}
 
 	return m, nil
@@ -359,6 +402,122 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		active.ToggleSelect()
 	case "c":
 		return m, m.enqueueCopy()
+	case "d":
+		if m.remoteBlocked(active) {
+			m.statusMsg = m.loc.T("status_not_connected")
+			return m, nil
+		}
+		files := active.GetSelectedFiles()
+		if len(files) == 0 {
+			if entry := active.CurrentFile(); entry != nil {
+				files = []string{entry.Name}
+			}
+		}
+		if len(files) == 0 {
+			m.statusMsg = m.loc.T("status_no_files_selected")
+			return m, nil
+		}
+		m.confirmDeleteNames = files
+		m.confirmDeletePaneName = m.paneName(active)
+		m.confirmPane.Message = m.loc.T("confirm_delete_message", len(files), strings.Join(files, ", "))
+		m.screen = ScreenConfirmDelete
+	case "r":
+		if m.remoteBlocked(active) {
+			m.statusMsg = m.loc.T("status_not_connected")
+			return m, nil
+		}
+		entry := active.CurrentFile()
+		if entry == nil {
+			m.statusMsg = m.loc.T("status_no_files_selected")
+			return m, nil
+		}
+		m.promptMode = "rename"
+		m.promptOldName = entry.Name
+		m.promptPaneName = m.paneName(active)
+		m.promptPane.Reset(entry.Name)
+		m.screen = ScreenPrompt
+	case "m":
+		if m.remoteBlocked(active) {
+			m.statusMsg = m.loc.T("status_not_connected")
+			return m, nil
+		}
+		m.promptMode = "mkdir"
+		m.promptPaneName = m.paneName(active)
+		m.promptPane.Reset("")
+		m.screen = ScreenPrompt
+	}
+	return m, nil
+}
+
+// remoteBlocked reports whether pane is the remote pane while no real SSH
+// connection exists — d/r/m share this guard rather than each repeating the
+// disconnected check inline (same condition enqueueCopyDirection applies to
+// transfers).
+func (m *Model) remoteBlocked(pane *BrowserPane) bool {
+	return pane == m.remotePane && !m.connected && !m.testMode
+}
+
+// paneByName returns the BrowserPane matching "local"/"remote", the same
+// pane-name convention used by transferDest.
+func (m *Model) paneByName(name string) *BrowserPane {
+	if name == "local" {
+		return m.localPane
+	}
+	return m.remotePane
+}
+
+// paneName is paneByName's inverse: the "local"/"remote" string for a given
+// BrowserPane.
+func (m *Model) paneName(pane *BrowserPane) string {
+	if pane == m.localPane {
+		return "local"
+	}
+	return "remote"
+}
+
+// handlePromptKey handles keys in the shared rename/mkdir text-input screen.
+func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.screen = ScreenBrowsing
+		return m, nil
+	case "enter":
+		value := m.promptPane.Value()
+		if value == "" {
+			m.promptPane.ErrMsg = m.loc.T("err_name_required")
+			return m, nil
+		}
+		if strings.Contains(value, "/") {
+			m.promptPane.ErrMsg = m.loc.T("err_name_invalid")
+			return m, nil
+		}
+		pane := m.paneByName(m.promptPaneName)
+		mode := m.promptMode
+		oldName := m.promptOldName
+		paneName := m.promptPaneName
+		m.screen = ScreenBrowsing
+		if mode == "mkdir" {
+			return m, mkdirCmd(pane.FS, pane.Cwd, value, paneName)
+		}
+		return m, renameCmd(pane.FS, pane.Cwd, oldName, value, paneName)
+	}
+	cmd := m.promptPane.HandleKey(msg)
+	return m, cmd
+}
+
+// handleConfirmDeleteKey handles keys in the delete Y/N confirmation screen.
+func (m *Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		pane := m.paneByName(m.confirmDeletePaneName)
+		names := m.confirmDeleteNames
+		paneName := m.confirmDeletePaneName
+		m.confirmDeleteNames = nil
+		m.screen = ScreenBrowsing
+		return m, deleteCmd(pane.FS, pane.Cwd, names, paneName)
+	case "n", "N", "esc":
+		m.confirmDeleteNames = nil
+		m.screen = ScreenBrowsing
 	}
 	return m, nil
 }
@@ -591,6 +750,12 @@ func (m *Model) View() string {
 	m.hostForm.Width = m.width - 4
 	m.hostForm.Height = m.height - queueHeight - 2
 
+	m.promptPane.Width = m.width - 4
+	m.promptPane.Height = m.height - queueHeight - 2
+
+	m.confirmPane.Width = m.width - 4
+	m.confirmPane.Height = m.height - queueHeight - 2
+
 	if m.connected || m.testMode {
 		m.remotePane.EmptyMessage = ""
 	} else {
@@ -628,6 +793,14 @@ func (m *Model) View() string {
 		previewTheme := NewTheme(primary, secondary)
 		previewLoc := i18n.NewLocalizer(m.settingsPane.CurrentPack())
 		content = m.settingsPane.View(previewTheme, previewLoc)
+	case ScreenPrompt:
+		headerKey := "rename_header"
+		if m.promptMode == "mkdir" {
+			headerKey = "mkdir_header"
+		}
+		content = m.promptPane.View(m.theme, m.loc, headerKey)
+	case ScreenConfirmDelete:
+		content = m.confirmPane.View(m.theme, m.loc)
 	}
 
 	status := m.statusMsg
