@@ -2,7 +2,6 @@ package sshclient
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -61,7 +60,7 @@ func Dial(h config.Host) (*ssh.Client, *sftp.Client, error) {
 
 func publicKeyFile(file string) ssh.AuthMethod {
 	return ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
-		key, err := ioutil.ReadFile(file)
+		key, err := os.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}

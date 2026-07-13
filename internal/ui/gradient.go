@@ -8,8 +8,11 @@ import (
 )
 
 // hexToRGB parses a "#RRGGBB" string into its red/green/blue components.
+// Callers only ever pass already-validated hex (via parseHexColor) or
+// trusted internal constants (logoFrom/logoTo), so a parse failure here
+// isn't a real runtime condition to recover from.
 func hexToRGB(hex string) (r, g, b int) {
-	fmt.Sscanf(strings.TrimPrefix(hex, "#"), "%02x%02x%02x", &r, &g, &b)
+	_, _ = fmt.Sscanf(strings.TrimPrefix(hex, "#"), "%02x%02x%02x", &r, &g, &b)
 	return
 }
 

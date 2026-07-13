@@ -43,22 +43,6 @@ type sshConnectedMsg struct {
 	err        error
 }
 
-type transferProgressMsg struct {
-	ID    int
-	Done  int64
-	Total int64
-	Speed string
-}
-
-type transferDoneMsg struct {
-	ID int
-}
-
-type transferErrorMsg struct {
-	ID  int
-	Err error
-}
-
 // Model is the root bubbletea model
 type Model struct {
 	width             int
@@ -287,9 +271,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = m.loc.T("status_read_dir_error", msg.err)
 		}
-		if msg.pane == "local" {
+		switch msg.pane {
+		case "local":
 			m.localPane.SetEntries(msg.entries)
-		} else if msg.pane == "remote" {
+		case "remote":
 			m.remotePane.SetEntries(msg.entries)
 		}
 
@@ -623,13 +608,14 @@ func (m *Model) View() string {
 
 	// The Site Manager is a modal overlay: when active, it replaces the
 	// dual-pane content area.
-	if m.screen == ScreenHostPicker {
+	switch m.screen {
+	case ScreenHostPicker:
 		content = m.hostPicker.View(m.theme, m.loc)
-	} else if m.screen == ScreenAddHost {
+	case ScreenAddHost:
 		content = m.hostForm.View(m.theme, m.loc)
-	} else if m.screen == ScreenAbout {
+	case ScreenAbout:
 		content = m.aboutPane.View(m.theme, m.loc)
-	} else if m.screen == ScreenSettings {
+	case ScreenSettings:
 		previewPrimary, previewSecondary := m.settingsPane.PreviewColors(m.primaryColorHex, m.secondaryColorHex)
 		primary, err := parseHexColor(previewPrimary)
 		if err != nil {
