@@ -603,6 +603,9 @@ func (m *Model) View() string {
 	m.hostPicker.Width = m.width - 4
 	m.hostPicker.Height = m.height - queueHeight - 2
 
+	m.hostForm.Width = m.width - 4
+	m.hostForm.Height = m.height - queueHeight - 2
+
 	if m.connected || m.testMode {
 		m.remotePane.EmptyMessage = ""
 	} else {

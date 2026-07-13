@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bvanhorn/exfil/internal/config"
 	"github.com/bvanhorn/exfil/internal/i18n"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func newTestForm() *HostFormPane {
@@ -124,5 +126,25 @@ func TestSaveAddsNewHost(t *testing.T) {
 	}
 	if len(got.Hosts) != 1 || got.Hosts[0].Name != "newhost" {
 		t.Errorf("expected one host named newhost, got %+v", got.Hosts)
+	}
+}
+
+// TestHostFormPaneViewHasGradientBorder is a regression test for the
+// visual-effects feature: Add/Edit Host previously rendered as plain
+// unbordered text — it must now show an actual color gradient border.
+func TestHostFormPaneViewHasGradientBorder(t *testing.T) {
+	f := newTestForm()
+	f.ResetForAdd()
+	f.Width = 40
+	f.Height = 14
+
+	theme := NewTheme(lipgloss.Color("#ff0000"), lipgloss.Color("#0000ff"))
+	view := f.View(theme, i18n.NewLocalizer("plain"))
+
+	if !strings.Contains(view, "╭") || !strings.Contains(view, "╯") {
+		t.Errorf("expected a bordered box, got:\n%s", view)
+	}
+	if !strings.Contains(view, "38;2;255;0;0") {
+		t.Errorf("expected the top-left corner to be pure red, got:\n%s", view)
 	}
 }
