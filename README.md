@@ -28,6 +28,7 @@ Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue,
 - ✅ Cyberpunk theming (dark, magenta/cyan/green accents), panes fill the full terminal
 - ✅ About screen (`?`) — logo, version, license
 - ✅ Selectable lingo packs (plain/secretsquirrel/keyboardcowboy/corposlut) and free-form hex theme colors via the Settings screen (`S`)
+- ✅ Gradient/neon chrome: pane borders, titles, and the transfer progress bar all render as a color gradient between your chosen primary/secondary theme colors, instead of a flat color
 - ⏳ Directory copy support
 - ⏳ Delete/rename/mkdir operations
 - ⏳ Multi-host sessions (currently one SSH connection at a time)

@@ -18,6 +18,7 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ About screen (`?`) — ASCII logo, version (via `git describe`, injected by `make build`), license
 - ✅ Selectable lingo packs (`internal/i18n`) and free-form hex theme colors, via a dedicated Settings screen (`S`)
 - ✅ Remote pane stays empty (with a "press `s` to connect" hint) until a real SSH connection is made — never defaults to browsing the local filesystem in normal use; `-t` opts back into that for local-to-local test transfers
+- ✅ Gradient/neon chrome (`internal/ui/gradient.go`): borders, titles, and the progress bar render as a primary→secondary gradient instead of a flat color; unfocused panes use a muted (50%-toward-black) variant
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
 
 **What's genuinely left** (not urgent, not blocking normal use):
@@ -74,6 +75,10 @@ No password/passphrase prompts.
 ### Lingo packs (`internal/i18n`)
 
 Every user-facing string goes through `loc.T("message_id", args...)` rather than being hardcoded. Four packs — `plain`, `secretsquirrel`, `keyboardcowboy`, `corposlut` — live as embedded YAML catalogs in `internal/i18n/locales/`. `Localizer.T` falls back to `plain` for any key missing from the active pack, then to the raw message ID if even `plain` doesn't have it. Panes don't store `Theme`/`Localizer` at construction — `View()` takes them as parameters — so a Settings-screen change re-themes the whole app immediately without reconstructing anything.
+
+### Gradient chrome (`internal/ui/gradient.go`)
+
+`gradientBox`/`gradientText` replace lipgloss's single-flat-color border/title styles everywhere a pane is bordered — a `lipgloss.Style` only holds one color, not enough to interpolate a gradient, so `Theme` also stores raw `PrimaryColor`/`SecondaryColor`/`MutedPrimaryColor`/`MutedSecondaryColor` (`lipgloss.Color`) values alongside its derived styles. The gradient runs diagonally (top-left to bottom-right) by character position; focused panes use the vivid primary/secondary pair, unfocused panes use the muted (50%-toward-black) pair. `gradientBox`'s `width`/`height` match `lipgloss.Style`'s own `Width()`/`Height()` convention (interior size, not counting border columns/rows) — width wraps overflowing content (via lipgloss's own reflow), height is a floor that pads shorter content but never truncates taller content. The About screen's ASCII logo keeps its own independent fixed cyan→purple gradient (`gradientLogo`, `logoFrom`/`logoTo`), unrelated to the user's theme colors.
 
 ### Versioning
 
