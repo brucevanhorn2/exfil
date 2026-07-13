@@ -125,3 +125,33 @@ func TestBrowserPaneFocusUsesVividGradientUnfocusedUsesMuted(t *testing.T) {
 		t.Errorf("focused pane's title/border should include the vivid primary color, got:\n%s", focused)
 	}
 }
+
+// TestBrowserPaneRenderedWidthMatchesAssignedWidth is a regression test for
+// the width parameter bug: gradientBox expects interior width (total rendered
+// width is width+2), so browser.go must pass b.Width, not b.Width-2. This
+// test verifies that each rendered line has exactly b.Width+2 columns,
+// matching the pane's assigned layout budget unchanged from before the
+// visual-effects feature.
+func TestBrowserPaneRenderedWidthMatchesAssignedWidth(t *testing.T) {
+	theme := NewTheme(lipgloss.Color(DefaultPrimaryColor), lipgloss.Color(DefaultSecondaryColor))
+
+	b := NewBrowserPane("local", fsys.LocalFS{})
+	b.Width = 40
+	b.Height = 10
+	b.SetEntries([]fsys.Entry{
+		{Name: "file1.txt", IsDir: false},
+		{Name: "file2.txt", IsDir: false},
+		{Name: "directory", IsDir: true},
+	})
+
+	view := b.View(theme)
+	lines := strings.Split(view, "\n")
+
+	expectedWidth := b.Width + 2 // interior width + 2 border columns
+	for i, line := range lines {
+		actualWidth := lipgloss.Width(line)
+		if actualWidth != expectedWidth {
+			t.Errorf("line %d: visible width = %d, want %d (b.Width=%d plus 2 for borders)\n%q", i, actualWidth, expectedWidth, b.Width, line)
+		}
+	}
+}

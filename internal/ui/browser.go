@@ -221,5 +221,5 @@ func (b *BrowserPane) View(theme Theme) string {
 	// b.Height - 2 (its interior convention doesn't know about the title
 	// row baked into content) to keep the total rendered size at b.Height,
 	// matching this pane's assigned layout budget exactly as before.
-	return gradientBox(content, b.Width-2, b.Height-2, from, to)
+	return gradientBox(content, b.Width, b.Height-2, from, to)
 }
