@@ -56,5 +56,5 @@ func (a *AboutPane) View(theme Theme, loc *i18n.Localizer) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return theme.PaneBorderFocus.Width(a.Width).Height(a.Height).Render(content)
+	return gradientBox(content, a.Width, a.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
