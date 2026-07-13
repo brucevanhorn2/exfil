@@ -775,10 +775,14 @@ Replace with:
 
 ```go
 	content := strings.Join(lines, "\n")
-	// -2: gradientBox's height convention is interior rows only, and the
+	// Height only: gradientBox's height convention is interior rows, and the
 	// title row is already baked into content (same accounting as
-	// BrowserPane.View()) — keeps the total rendered size at q.Height.
-	return gradientBox(content, q.Width-2, q.Height-2, theme.PrimaryColor, theme.SecondaryColor)
+	// BrowserPane.View()) — q.Height-2 keeps the total rendered size at
+	// q.Height. Width needs no such adjustment — q.Width passes straight
+	// through, matching the old border.Width(q.Width) call's own total
+	// rendered width (q.Width+2, since QueueBorder already carries
+	// Padding(0, 1) baked into that budget) exactly.
+	return gradientBox(content, q.Width, q.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
 ```
 
@@ -914,13 +918,15 @@ Replace with:
 
 ```go
 	content := strings.Join(lines, "\n")
-	return gradientBox(content, a.Width-2, a.Height-2, theme.PrimaryColor, theme.SecondaryColor)
+	return gradientBox(content, a.Width, a.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
 ```
 
-(The same `-2` accounting as `BrowserPane`/`QueuePane`: `a.Width`/`a.Height`
-are the total budget app.go assigns this screen, matching what
-`.Width(a.Width).Height(a.Height)` was already being handed today.)
+(Height only, same as `BrowserPane`/`QueuePane`: the `-2` accounts for
+gradientBox's height being interior-only. Width needs no adjustment — `a.Width`
+passes straight through, matching the old `.Width(a.Width).Height(a.Height)`
+call's own total rendered width (`a.Width+2`, since `PaneBorderFocus` already
+carries `Padding(0, 1)` baked into that budget) exactly.)
 
 - [ ] **Step 2: Create `internal/ui/about_test.go`**
 
@@ -1065,7 +1071,7 @@ Replace with:
 	rows = append(rows, "", theme.PaneTitle.Render(loc.T("settings_hint")))
 
 	content := strings.Join(rows, "\n")
-	return gradientBox(content, s.Width-2, s.Height-2, theme.PrimaryColor, theme.SecondaryColor)
+	return gradientBox(content, s.Width, s.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
 ```
 
@@ -1227,7 +1233,7 @@ func (hp *HostPickerPane) View(theme Theme, loc *i18n.Localizer) string {
 		content = strings.Join(lines, "\n")
 	}
 
-	return gradientBox(content, hp.Width-2, hp.Height-2, theme.PrimaryColor, theme.SecondaryColor)
+	return gradientBox(content, hp.Width, hp.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
 ```
 
@@ -1395,7 +1401,7 @@ Replace with:
 	}
 
 	content := strings.Join(lines, "\n")
-	return gradientBox(content, hf.Width-2, hf.Height-2, theme.PrimaryColor, theme.SecondaryColor)
+	return gradientBox(content, hf.Width, hf.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
 ```
 
