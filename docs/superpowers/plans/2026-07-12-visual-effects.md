@@ -630,12 +630,10 @@ Replace with:
 
 ```go
 	content := strings.Join(lines, "\n")
-	// -3 for the border/title accounting already done above (contentHeight
-	// := b.Height - 3), so gradientBox's own height parameter must be
-	// b.Height - 2 (its interior convention doesn't know about the title
-	// row baked into content) to keep the total rendered size at b.Height,
-	// matching this pane's assigned layout budget exactly as before.
-	return gradientBox(content, b.Width-2, b.Height-2, from, to)
+	// -2: gradientBox's height convention is interior rows only, and the
+	// title row is already baked into content (same accounting as
+	// BrowserPane.View()) — keeps the total rendered size at b.Height.
+	return gradientBox(content, b.Width, b.Height-2, from, to)
 }
 ```
 
