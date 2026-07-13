@@ -30,11 +30,17 @@ func parseHexColor(s string) (lipgloss.Color, error) {
 }
 
 type Theme struct {
-	// Pane borders
-	PaneBorder      lipgloss.Style
-	PaneBorderFocus lipgloss.Style
-	PaneTitle       lipgloss.Style
-	PaneTitleFocus  lipgloss.Style
+	// Raw color values, needed by gradientBox/gradientText (a lipgloss.Style
+	// only holds one flat color, not enough to interpolate a gradient from).
+	PrimaryColor        lipgloss.Color
+	SecondaryColor      lipgloss.Color
+	MutedPrimaryColor   lipgloss.Color // PrimaryColor blended 50% toward black
+	MutedSecondaryColor lipgloss.Color // SecondaryColor blended 50% toward black
+
+	// Pane titles (borders are drawn by gradientBox using PrimaryColor/
+	// SecondaryColor/Muted* above, not a lipgloss.Style)
+	PaneTitle      lipgloss.Style
+	PaneTitleFocus lipgloss.Style
 
 	// Browser content
 	BrowserDir      lipgloss.Style
@@ -42,9 +48,7 @@ type Theme struct {
 	BrowserSelected lipgloss.Style
 	BrowserCursor   lipgloss.Style
 
-	// Queue pane
-	QueueBorder     lipgloss.Style
-	QueueTitle      lipgloss.Style
+	// Queue pane (border is drawn by gradientBox; title uses gradientText)
 	TransferQueued  lipgloss.Style
 	TransferRunning lipgloss.Style
 	TransferDone    lipgloss.Style
@@ -65,18 +69,10 @@ type Theme struct {
 // done, and error — rather than being purely aesthetic.
 func NewTheme(primary, secondary lipgloss.Color) Theme {
 	return Theme{
-		// Pane borders
-		PaneBorder: lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(secondary).
-			Foreground(lipgloss.Color("7")).
-			Padding(0, 1),
-
-		PaneBorderFocus: lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(primary).
-			Foreground(lipgloss.Color("7")).
-			Padding(0, 1),
+		PrimaryColor:        primary,
+		SecondaryColor:      secondary,
+		MutedPrimaryColor:   mutedColor(primary),
+		MutedSecondaryColor: mutedColor(secondary),
 
 		PaneTitle: lipgloss.NewStyle().
 			Foreground(secondary).
@@ -103,15 +99,6 @@ func NewTheme(primary, secondary lipgloss.Color) Theme {
 			Bold(true),
 
 		// Queue
-		QueueBorder: lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(secondary).
-			Padding(0, 1),
-
-		QueueTitle: lipgloss.NewStyle().
-			Foreground(secondary).
-			Bold(true),
-
 		TransferQueued: lipgloss.NewStyle().
 			Foreground(secondary),
 

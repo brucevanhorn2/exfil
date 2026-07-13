@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/bvanhorn/exfil/internal/i18n"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestSettingsPaneResetFromConfigFindsPackIndex(t *testing.T) {
@@ -91,5 +93,26 @@ func TestSettingsPanePreviewColorsFallsBackOnIncompleteInput(t *testing.T) {
 	}
 	if secondary != "#6E6E6E" {
 		t.Errorf("expected valid secondary input %q to be used, got %q", "#6E6E6E", secondary)
+	}
+}
+
+// TestSettingsPaneViewHasGradientBorder is a regression test for the
+// visual-effects feature: Settings previously rendered as plain unbordered
+// text — it must now be wrapped in a gradient border like every other
+// screen.
+func TestSettingsPaneViewHasGradientBorder(t *testing.T) {
+	s := NewSettingsPane()
+	s.ResetFromConfig("plain", "#B341F5", "#6E6E6E")
+	s.Width = 40
+	s.Height = 12
+
+	theme := NewTheme(lipgloss.Color("#ff0000"), lipgloss.Color("#0000ff"))
+	view := s.View(theme, i18n.NewLocalizer("plain"))
+
+	if !strings.Contains(view, "╭") || !strings.Contains(view, "╯") {
+		t.Errorf("expected a bordered box, got:\n%s", view)
+	}
+	if !strings.Contains(view, "38;2;255;0;0") {
+		t.Errorf("expected the top-left corner to be pure red, got:\n%s", view)
 	}
 }

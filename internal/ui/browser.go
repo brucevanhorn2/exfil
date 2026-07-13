@@ -150,15 +150,12 @@ func (b *BrowserPane) CurrentFile() *fsys.Entry {
 }
 
 func (b *BrowserPane) View(theme Theme) string {
-	titleStyle := theme.PaneTitle
-	borderStyle := theme.PaneBorder
-
+	from, to := theme.MutedPrimaryColor, theme.MutedSecondaryColor
 	if b.Focus {
-		titleStyle = theme.PaneTitleFocus
-		borderStyle = theme.PaneBorderFocus
+		from, to = theme.PrimaryColor, theme.SecondaryColor
 	}
 
-	titleWithPath := titleStyle.Render(fmt.Sprintf(" %s:%s ", b.Title, b.Cwd))
+	titleWithPath := gradientText(fmt.Sprintf(" %s:%s ", b.Title, b.Cwd), from, to)
 
 	lines := []string{titleWithPath}
 
@@ -219,6 +216,10 @@ func (b *BrowserPane) View(theme Theme) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	bordered := borderStyle.Width(b.Width).Render(content)
-	return bordered
+	// -3 for the border/title accounting already done above (contentHeight
+	// := b.Height - 3), so gradientBox's own height parameter must be
+	// b.Height - 2 (its interior convention doesn't know about the title
+	// row baked into content) to keep the total rendered size at b.Height,
+	// matching this pane's assigned layout budget exactly as before.
+	return gradientBox(content, b.Width, b.Height-2, from, to)
 }

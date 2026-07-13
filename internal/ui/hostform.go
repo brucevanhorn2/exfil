@@ -209,7 +209,7 @@ func (hf *HostFormPane) View(theme Theme, loc *i18n.Localizer) string {
 	}
 
 	lines := []string{
-		theme.PaneTitle.Render(header),
+		gradientText(header, theme.PrimaryColor, theme.SecondaryColor),
 		"",
 	}
 
@@ -226,5 +226,6 @@ func (hf *HostFormPane) View(theme Theme, loc *i18n.Localizer) string {
 		lines = append(lines, "", theme.StatusError.Render(loc.T("error_prefix")+hf.errMsg))
 	}
 
-	return strings.Join(lines, "\n")
+	content := strings.Join(lines, "\n")
+	return gradientBox(content, hf.Width, hf.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }

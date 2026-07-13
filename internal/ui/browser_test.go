@@ -99,3 +99,59 @@ func TestBrowserPaneEmptyMessageHiddenOnceEntriesExist(t *testing.T) {
 		t.Errorf("EmptyMessage should not render once entries are present, got:\n%s", view)
 	}
 }
+
+// TestBrowserPaneFocusUsesVividGradientUnfocusedUsesMuted is a regression
+// test for the visual-effects feature: a focused pane's border/title must
+// render with the full-intensity primary/secondary gradient, and an
+// unfocused pane with the muted (50%-toward-black) variant — proving the
+// two are visually distinguishable, not just structurally different.
+func TestBrowserPaneFocusUsesVividGradientUnfocusedUsesMuted(t *testing.T) {
+	theme := NewTheme(lipgloss.Color("#ff0000"), lipgloss.Color("#0000ff"))
+
+	b := NewBrowserPane("test", fsys.LocalFS{})
+	b.Width = 30
+	b.Height = 10
+
+	b.Focus = false
+	unfocused := b.View(theme)
+	vividRed := "38;2;255;0;0"
+	if strings.Contains(unfocused, vividRed) {
+		t.Errorf("unfocused pane should not use the vivid primary color, got:\n%s", unfocused)
+	}
+
+	b.Focus = true
+	focused := b.View(theme)
+	if !strings.Contains(focused, vividRed) {
+		t.Errorf("focused pane's title/border should include the vivid primary color, got:\n%s", focused)
+	}
+}
+
+// TestBrowserPaneRenderedWidthMatchesAssignedWidth is a regression test for
+// the width parameter bug: gradientBox expects interior width (total rendered
+// width is width+2), so browser.go must pass b.Width, not b.Width-2. This
+// test verifies that each rendered line has exactly b.Width+2 columns,
+// matching the pane's assigned layout budget unchanged from before the
+// visual-effects feature.
+func TestBrowserPaneRenderedWidthMatchesAssignedWidth(t *testing.T) {
+	theme := NewTheme(lipgloss.Color(DefaultPrimaryColor), lipgloss.Color(DefaultSecondaryColor))
+
+	b := NewBrowserPane("local", fsys.LocalFS{})
+	b.Width = 40
+	b.Height = 10
+	b.SetEntries([]fsys.Entry{
+		{Name: "file1.txt", IsDir: false},
+		{Name: "file2.txt", IsDir: false},
+		{Name: "directory", IsDir: true},
+	})
+
+	view := b.View(theme)
+	lines := strings.Split(view, "\n")
+
+	expectedWidth := b.Width + 2 // interior width + 2 border columns
+	for i, line := range lines {
+		actualWidth := lipgloss.Width(line)
+		if actualWidth != expectedWidth {
+			t.Errorf("line %d: visible width = %d, want %d (b.Width=%d plus 2 for borders)\n%q", i, actualWidth, expectedWidth, b.Width, line)
+		}
+	}
+}

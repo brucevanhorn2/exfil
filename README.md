@@ -1,7 +1,9 @@
-# exfil — cyberpunk TUI SCP/SFTP client
+# exfil — scp client for edgerunners, keyboard cowboys, and corposluts alike
 
 [![CI](https://github.com/brucevanhorn2/exfil/actions/workflows/ci.yml/badge.svg)](https://github.com/brucevanhorn2/exfil/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+![exfil about screen](assets/exfil-about.png)
 
 ![exfil screenshot](assets/exfil-screenshot.png)
 
@@ -28,6 +30,7 @@ Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue,
 - ✅ Cyberpunk theming (dark, magenta/cyan/green accents), panes fill the full terminal
 - ✅ About screen (`?`) — logo, version, license
 - ✅ Selectable lingo packs (plain/secretsquirrel/keyboardcowboy/corposlut) and free-form hex theme colors via the Settings screen (`S`)
+- ✅ Gradient/neon chrome: pane borders, titles, and the transfer progress bar all render as a color gradient between your chosen primary/secondary theme colors, instead of a flat color
 - ⏳ Directory copy support
 - ⏳ Delete/rename/mkdir operations
 - ⏳ Multi-host sessions (currently one SSH connection at a time)

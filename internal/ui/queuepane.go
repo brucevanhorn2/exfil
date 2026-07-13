@@ -57,8 +57,7 @@ func (q *QueuePane) UpdateTransfer(id int, status TransferStatus, done, total in
 }
 
 func (q *QueuePane) View(theme Theme, loc *i18n.Localizer) string {
-	title := theme.QueueTitle.Render(loc.T("screen_title_queue"))
-	border := theme.QueueBorder
+	title := gradientText(loc.T("screen_title_queue"), theme.PrimaryColor, theme.SecondaryColor)
 
 	// -2 for the border's top/bottom lines, -1 for the title line above.
 	maxRows := q.Height - 3
@@ -93,7 +92,14 @@ func (q *QueuePane) View(theme Theme, loc *i18n.Localizer) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return border.Width(q.Width).Render(content)
+	// Height only: gradientBox's height convention is interior rows, and the
+	// title row is already baked into content (same accounting as
+	// BrowserPane.View()) — q.Height-2 keeps the total rendered size at
+	// q.Height. Width needs no such adjustment — q.Width passes straight
+	// through, matching the pre-gradient flat-styled border's own total
+	// rendered width (q.Width+2, since that style already carried
+	// Padding(0, 1) baked into that budget) exactly.
+	return gradientBox(content, q.Width, q.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
 
 func (q *QueuePane) renderTransfer(t Transfer, theme Theme, loc *i18n.Localizer) string {
@@ -126,7 +132,7 @@ func (q *QueuePane) renderTransfer(t Transfer, theme Theme, loc *i18n.Localizer)
 	var progressView string
 	if t.Total > 0 {
 		pct := float64(t.Done) / float64(t.Total)
-		prog := progress.New(progress.WithScaledGradient("#ff00ff", "#00ffff"))
+		prog := progress.New(progress.WithScaledGradient(string(theme.PrimaryColor), string(theme.SecondaryColor)))
 		progressView = prog.ViewAs(pct)
 	} else {
 		progressView = "      "
