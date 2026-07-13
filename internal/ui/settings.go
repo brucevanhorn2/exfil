@@ -160,7 +160,7 @@ func (s *SettingsPane) PrimaryValue() string   { return s.primaryInput.Value() }
 func (s *SettingsPane) SecondaryValue() string { return s.secondaryInput.Value() }
 
 func (s *SettingsPane) View(theme Theme, loc *i18n.Localizer) string {
-	title := theme.PaneTitle.Render(loc.T("screen_title_settings"))
+	title := gradientText(loc.T("screen_title_settings"), theme.PrimaryColor, theme.SecondaryColor)
 
 	rows := []string{title, ""}
 
@@ -188,5 +188,6 @@ func (s *SettingsPane) View(theme Theme, loc *i18n.Localizer) string {
 
 	rows = append(rows, "", theme.PaneTitle.Render(loc.T("settings_hint")))
 
-	return strings.Join(rows, "\n")
+	content := strings.Join(rows, "\n")
+	return gradientBox(content, s.Width, s.Height-2, theme.PrimaryColor, theme.SecondaryColor)
 }
