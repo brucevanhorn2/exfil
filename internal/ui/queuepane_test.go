@@ -44,3 +44,23 @@ func TestQueuePaneViewEmptyFillsHeight(t *testing.T) {
 		t.Errorf("expected empty view to still render exactly %d lines, got %d", q.Height, len(lines))
 	}
 }
+
+// TestQueuePaneViewBorderUsesThemeGradient is a regression test for the
+// visual-effects feature: the queue border must actually vary in color
+// (proving a real gradient, not a flat single color) between its
+// primary-colored and secondary-colored endpoints.
+func TestQueuePaneViewBorderUsesThemeGradient(t *testing.T) {
+	q := NewQueuePane()
+	q.Width = 40
+	q.Height = 8
+
+	theme := NewTheme(lipgloss.Color("#ff0000"), lipgloss.Color("#0000ff"))
+	view := q.View(theme, i18n.NewLocalizer("plain"))
+
+	if !strings.Contains(view, "38;2;255;0;0") {
+		t.Errorf("expected the top-left corner to be pure red, got:\n%s", view)
+	}
+	if !strings.Contains(view, "38;2;0;0;255") {
+		t.Errorf("expected the bottom-right corner to be pure blue, got:\n%s", view)
+	}
+}
