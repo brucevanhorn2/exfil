@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: `hexToRGB(hex string) (r, g, b int)`, `lerp(a, b int, t float64) int`, `gradientLogo(text, from, to string) string`, `gradientText(s string, from, to lipgloss.Color) string`, `mutedColor(c lipgloss.Color) lipgloss.Color`, `gradientBox(content string, width, height int, from, to lipgloss.Color) string`
 
-- [ ] **Step 1: Create `internal/ui/gradient.go`**
+- [x] **Step 1: Create `internal/ui/gradient.go`**
 
 `hexToRGB`, `lerp`, and `gradientLogo` move here verbatim from `about.go` (no behavior change — About's logo gradient keeps working exactly as today, just relocated since it's now a shared building block, not an About-only detail). `gradientText`, `mutedColor`, and `gradientBox` are new.
 
@@ -196,7 +196,7 @@ func gradientBox(content string, width, height int, from, to lipgloss.Color) str
 }
 ```
 
-- [ ] **Step 2: Remove the now-duplicated functions from `about.go`**
+- [x] **Step 2: Remove the now-duplicated functions from `about.go`**
 
 Find (in `internal/ui/about.go`):
 
@@ -281,7 +281,7 @@ Replace with:
 func (a *AboutPane) View(theme Theme, loc *i18n.Localizer) string {
 ```
 
-- [ ] **Step 3: Write `internal/ui/gradient_test.go`**
+- [x] **Step 3: Write `internal/ui/gradient_test.go`**
 
 Tests run with `go test` are not attached to a TTY, so lipgloss defaults to
 plain (no-color) output — verified empirically against this exact module: a
@@ -404,7 +404,7 @@ func TestGradientBoxNeverTruncatesTallerContent(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run `go mod tidy` (new test-only dependency on `github.com/muesli/termenv`)**
+- [x] **Step 4: Run `go mod tidy` (new test-only dependency on `github.com/muesli/termenv`)**
 
 Run: `go mod tidy`
 Expected: `github.com/muesli/termenv` moves from `// indirect` to a direct
@@ -412,13 +412,13 @@ requirement in `go.mod` (it's already in `go.sum` as a transitive dependency
 of `lipgloss`/`bubbles`, so no new download is needed — just a `go.mod`
 bookkeeping change).
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS (including the new ones above and
 every pre-existing test unchanged), `gofmt -l .` prints nothing.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/ui/gradient.go internal/ui/gradient_test.go internal/ui/about.go go.mod
@@ -437,7 +437,7 @@ git commit -m "Add gradientBox/gradientText core rendering primitives"
 - Consumes: `mutedColor(c lipgloss.Color) lipgloss.Color` (Task 1)
 - Produces: `Theme.PrimaryColor`, `Theme.SecondaryColor`, `Theme.MutedPrimaryColor`, `Theme.MutedSecondaryColor` (all `lipgloss.Color`)
 
-- [ ] **Step 1: Add the new fields to `Theme`**
+- [x] **Step 1: Add the new fields to `Theme`**
 
 Find (in `internal/ui/theme.go`):
 
@@ -468,7 +468,7 @@ type Theme struct {
 	PaneTitleFocus  lipgloss.Style
 ```
 
-- [ ] **Step 2: Populate the new fields in `NewTheme`**
+- [x] **Step 2: Populate the new fields in `NewTheme`**
 
 Find:
 
@@ -493,12 +493,12 @@ func NewTheme(primary, secondary lipgloss.Color) Theme {
 		PaneBorder: lipgloss.NewStyle().
 ```
 
-- [ ] **Step 3: Run gofmt to fix struct field alignment**
+- [x] **Step 3: Run gofmt to fix struct field alignment**
 
 Run: `gofmt -w internal/ui/theme.go`
 Expected: field name/type columns realign automatically; no functional change.
 
-- [ ] **Step 4: Add test assertions**
+- [x] **Step 4: Add test assertions**
 
 Find (in `internal/ui/theme_test.go`):
 
@@ -565,12 +565,12 @@ func TestNewThemeStoresRawGradientColors(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/ui/theme.go internal/ui/theme_test.go
@@ -588,7 +588,7 @@ git commit -m "Theme: store raw primary/secondary/muted gradient colors"
 **Interfaces:**
 - Consumes: `gradientBox`, `gradientText` (Task 1), `Theme.PrimaryColor`/`SecondaryColor`/`MutedPrimaryColor`/`MutedSecondaryColor` (Task 2)
 
-- [ ] **Step 1: Switch `View()`'s border and title rendering**
+- [x] **Step 1: Switch `View()`'s border and title rendering**
 
 Find (in `internal/ui/browser.go`):
 
@@ -637,7 +637,7 @@ Replace with:
 }
 ```
 
-- [ ] **Step 2: Run the existing test suite to confirm no regressions**
+- [x] **Step 2: Run the existing test suite to confirm no regressions**
 
 Run: `go test ./internal/ui/... -run TestBrowserPane -v`
 Expected: `TestBrowserPaneBack`, `TestBrowserPaneEnsureVisible`,
@@ -645,7 +645,7 @@ Expected: `TestBrowserPaneBack`, `TestBrowserPaneEnsureVisible`,
 `TestBrowserPaneEmptyMessageHiddenOnceEntriesExist` all still PASS
 unchanged — none of them depend on the border rendering mechanism.
 
-- [ ] **Step 3: Add a focus-vs-unfocus color regression test**
+- [x] **Step 3: Add a focus-vs-unfocus color regression test**
 
 Find (in `internal/ui/browser_test.go`):
 
@@ -717,12 +717,12 @@ func TestBrowserPaneFocusUsesVividGradientUnfocusedUsesMuted(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run the full test suite**
+- [x] **Step 4: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ui/browser.go internal/ui/browser_test.go
@@ -740,7 +740,7 @@ git commit -m "BrowserPane: gradient border/title, muted when unfocused"
 **Interfaces:**
 - Consumes: `gradientBox`, `gradientText` (Task 1), `Theme.PrimaryColor`/`SecondaryColor` (Task 2)
 
-- [ ] **Step 1: Switch `View()`'s border and title rendering**
+- [x] **Step 1: Switch `View()`'s border and title rendering**
 
 Find (in `internal/ui/queuepane.go`):
 
@@ -786,7 +786,7 @@ Replace with:
 }
 ```
 
-- [ ] **Step 2: Swap the progress bar's hardcoded gradient for the theme's colors**
+- [x] **Step 2: Swap the progress bar's hardcoded gradient for the theme's colors**
 
 Find:
 
@@ -814,7 +814,7 @@ Replace with:
 	}
 ```
 
-- [ ] **Step 3: Run the existing test suite to confirm no regressions**
+- [x] **Step 3: Run the existing test suite to confirm no regressions**
 
 Run: `go test ./internal/ui/... -run TestQueuePane -v`
 Expected: `TestQueuePaneViewCapsHeight` and `TestQueuePaneViewEmptyFillsHeight`
@@ -823,7 +823,7 @@ before `content` is built, so `gradientBox`'s height-is-a-floor behavior
 never has more than `q.Height-2` lines to work with, producing exactly
 `q.Height` total rendered lines exactly as before.
 
-- [ ] **Step 4: Add a gradient color-variation regression test**
+- [x] **Step 4: Add a gradient color-variation regression test**
 
 Find (in `internal/ui/queuepane_test.go`):
 
@@ -877,12 +877,12 @@ func TestQueuePaneViewBorderUsesThemeGradient(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/ui/queuepane.go internal/ui/queuepane_test.go
@@ -904,7 +904,7 @@ No previous task touches `about.go`'s `View()` method (Task 1 only removed
 the relocated helper functions) — this task changes only the border call,
 leaving the logo's own fixed-gradient rendering completely untouched.
 
-- [ ] **Step 1: Switch the border rendering**
+- [x] **Step 1: Switch the border rendering**
 
 Find (in `internal/ui/about.go`):
 
@@ -928,7 +928,7 @@ passes straight through, matching the old `.Width(a.Width).Height(a.Height)`
 call's own total rendered width (`a.Width+2`, since `PaneBorderFocus` already
 carries `Padding(0, 1)` baked into that budget) exactly.)
 
-- [ ] **Step 2: Create `internal/ui/about_test.go`**
+- [x] **Step 2: Create `internal/ui/about_test.go`**
 
 No test file exists for `AboutPane` yet. This adds a baseline smoke test
 covering the content that's still present after switching the border
@@ -984,12 +984,12 @@ func TestAboutPaneViewBorderUsesThemeGradient(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add internal/ui/about.go internal/ui/about_test.go
@@ -1013,7 +1013,7 @@ border for the first time, wiring up its already-existing (previously
 unused) `Width`/`Height` fields the same way `app.go`'s `View()` already
 wires `AboutPane.Width`/`Height`.
 
-- [ ] **Step 1: Wire `Width`/`Height` in `app.go`**
+- [x] **Step 1: Wire `Width`/`Height` in `app.go`**
 
 Find (in `internal/ui/app.go`):
 
@@ -1036,7 +1036,7 @@ Replace with:
 	if m.connected || m.testMode {
 ```
 
-- [ ] **Step 2: Wrap `SettingsPane.View()`'s output in a gradient border**
+- [x] **Step 2: Wrap `SettingsPane.View()`'s output in a gradient border**
 
 Find (in `internal/ui/settings.go`):
 
@@ -1075,14 +1075,14 @@ Replace with:
 }
 ```
 
-- [ ] **Step 3: Update existing tests that call `View()` (if any check exact content only)**
+- [x] **Step 3: Update existing tests that call `View()` (if any check exact content only)**
 
 Run: `go test ./internal/ui/... -run TestSettingsPane -v`
 Expected: All existing `SettingsPane` tests still PASS — none of them call
 `View()` (they test `ResetFromConfig`, `CyclePack`, field navigation,
 `Validate`, `PreviewColors` directly), so no test changes are needed here.
 
-- [ ] **Step 4: Add a border regression test**
+- [x] **Step 4: Add a border regression test**
 
 Find (in `internal/ui/settings_test.go`, at the end of the file):
 
@@ -1129,12 +1129,12 @@ import (
 )
 ```
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/ui/settings.go internal/ui/app.go internal/ui/settings_test.go
@@ -1155,7 +1155,7 @@ git commit -m "SettingsPane: add gradient border (previously unbordered)"
 
 No test file exists for `HostPickerPane` yet.
 
-- [ ] **Step 1: Wire `Width`/`Height` in `app.go`**
+- [x] **Step 1: Wire `Width`/`Height` in `app.go`**
 
 Find (in `internal/ui/app.go`, right after the line added in Task 6):
 
@@ -1178,7 +1178,7 @@ Replace with:
 	if m.connected || m.testMode {
 ```
 
-- [ ] **Step 2: Wrap `HostPickerPane.View()`'s output in a gradient border**
+- [x] **Step 2: Wrap `HostPickerPane.View()`'s output in a gradient border**
 
 Find (in `internal/ui/hostpicker.go`):
 
@@ -1237,7 +1237,7 @@ func (hp *HostPickerPane) View(theme Theme, loc *i18n.Localizer) string {
 }
 ```
 
-- [ ] **Step 3: Create `internal/ui/hostpicker_test.go`**
+- [x] **Step 3: Create `internal/ui/hostpicker_test.go`**
 
 ```go
 package ui
@@ -1299,12 +1299,12 @@ func TestHostPickerPaneViewBorderUsesThemeGradient(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run the full test suite**
+- [x] **Step 4: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ui/hostpicker.go internal/ui/app.go internal/ui/hostpicker_test.go
@@ -1323,7 +1323,7 @@ git commit -m "HostPickerPane: add gradient border (previously unbordered)"
 **Interfaces:**
 - Consumes: `gradientBox`, `gradientText` (Task 1), `Theme.PrimaryColor`/`SecondaryColor` (Task 2)
 
-- [ ] **Step 1: Wire `Width`/`Height` in `app.go`**
+- [x] **Step 1: Wire `Width`/`Height` in `app.go`**
 
 Find (in `internal/ui/app.go`, right after the line added in Task 7):
 
@@ -1346,7 +1346,7 @@ Replace with:
 	if m.connected || m.testMode {
 ```
 
-- [ ] **Step 2: Wrap `HostFormPane.View()`'s output in a gradient border**
+- [x] **Step 2: Wrap `HostFormPane.View()`'s output in a gradient border**
 
 Find (in `internal/ui/hostform.go`):
 
@@ -1405,14 +1405,14 @@ Replace with:
 }
 ```
 
-- [ ] **Step 3: Run the existing test suite to confirm no regressions**
+- [x] **Step 3: Run the existing test suite to confirm no regressions**
 
 Run: `go test ./internal/ui/... -run TestBuildHost -v && go test ./internal/ui/... -run TestSave -v`
 Expected: `TestBuildHostValidation`, `TestBuildHostDefaultPort`,
 `TestSaveEditsByName`, `TestSaveAddsNewHost` all still PASS unchanged — none
 of them call `View()`.
 
-- [ ] **Step 4: Add a border regression test**
+- [x] **Step 4: Add a border regression test**
 
 Add to the end of `internal/ui/hostform_test.go`:
 
@@ -1451,12 +1451,12 @@ import (
 )
 ```
 
-- [ ] **Step 5: Run the full test suite**
+- [x] **Step 5: Run the full test suite**
 
 Run: `go build ./... && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS, `gofmt -l .` prints nothing.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/ui/hostform.go internal/ui/app.go internal/ui/hostform_test.go
@@ -1473,13 +1473,13 @@ git commit -m "HostFormPane: add gradient border (previously unbordered)"
 
 **Interfaces:** none (docs + manual verification only)
 
-- [ ] **Step 1: Run the full automated check suite**
+- [x] **Step 1: Run the full automated check suite**
 
 Run: `make build && go vet ./... && go test ./... -v && gofmt -l .`
 Expected: Build succeeds, all tests PASS across every package, `gofmt -l .`
 prints nothing.
 
-- [ ] **Step 2: Manual smoke test (not automatable — run and observe)**
+- [x] **Step 2: Manual smoke test (not automatable — run and observe)**
 
 ```bash
 ./exfil
@@ -1513,7 +1513,7 @@ more vivid than the remote pane (unfocused):
    behavior should degrade gracefully, matching each pane's pre-existing
    narrow-terminal behavior).
 
-- [ ] **Step 3: Update `README.md`**
+- [x] **Step 3: Update `README.md`**
 
 Add a new bullet to the "Status" list (after the lingo-packs/theme bullet):
 
@@ -1521,7 +1521,7 @@ Add a new bullet to the "Status" list (after the lingo-packs/theme bullet):
 - ✅ Gradient/neon chrome: pane borders, titles, and the transfer progress bar all render as a color gradient between your chosen primary/secondary theme colors, instead of a flat color
 ```
 
-- [ ] **Step 4: Update `CLAUDE.md`**
+- [x] **Step 4: Update `CLAUDE.md`**
 
 Add to the "Current Status" checklist:
 
@@ -1537,7 +1537,7 @@ Add a new subsection under "Code Patterns & Guidelines":
 `gradientBox`/`gradientText` replace lipgloss's single-flat-color border/title styles everywhere a pane is bordered — a `lipgloss.Style` only holds one color, not enough to interpolate a gradient, so `Theme` also stores raw `PrimaryColor`/`SecondaryColor`/`MutedPrimaryColor`/`MutedSecondaryColor` (`lipgloss.Color`) values alongside its derived styles. The gradient runs diagonally (top-left to bottom-right) by character position; focused panes use the vivid primary/secondary pair, unfocused panes use the muted (50%-toward-black) pair. `gradientBox`'s `width`/`height` match `lipgloss.Style`'s own `Width()`/`Height()` convention (interior size, not counting border columns/rows) — width wraps overflowing content (via lipgloss's own reflow), height is a floor that pads shorter content but never truncates taller content. The About screen's ASCII logo keeps its own independent fixed cyan→purple gradient (`gradientLogo`, `logoFrom`/`logoTo`), unrelated to the user's theme colors.
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add README.md CLAUDE.md
