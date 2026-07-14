@@ -74,6 +74,10 @@ func (rfs *RemoteFS) Mkdir(path string) error {
 	return rfs.client.Mkdir(path)
 }
 
+func (rfs *RemoteFS) MkdirAll(path string) error {
+	return rfs.client.MkdirAll(path)
+}
+
 func (rfs *RemoteFS) Stat(path string) (*Entry, error) {
 	info, err := rfs.client.Stat(path)
 	if err != nil {

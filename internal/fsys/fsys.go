@@ -30,4 +30,8 @@ type FileSystem interface {
 	RemoveAll(path string) error
 	Rename(oldPath, newPath string) error
 	Mkdir(path string) error
+	// MkdirAll creates path and any missing intermediate directories,
+	// succeeding if path already exists — used by recursive directory copy
+	// to mirror a source tree's structure on the destination.
+	MkdirAll(path string) error
 }

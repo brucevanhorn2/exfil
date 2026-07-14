@@ -22,13 +22,13 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
 - ✅ File operations: delete (`d`, with Y/N confirm — works on the cursor file or all marked files), rename (`r`), mkdir (`m`), on both local and remote (SFTP) panes; all three refresh the current pane's listing afterward
 - ✅ Recursive directory delete: marking a non-empty directory and pressing `d` escalates the confirm screen to stronger wording (`ConfirmPane`'s header/message keys picked via `Model.confirmDeleteRecursive`, same convention as `ScreenPrompt`'s header selection) and uses `fsys.FileSystem.RemoveAll` (`os.RemoveAll`/`sftp.Client.RemoveAll` — both already walk the tree, no custom recursion written); a mix of marked files and non-empty directories can be deleted in one operation, with `deleteTarget.IsDir` picking `Remove` vs `RemoveAll` per entry. No upfront item count or emptiness check — computing one would mean walking the tree just to decide before showing the prompt
+- ✅ Recursive directory copy (`internal/ui/copyops.go`): marking a directory and pushing it across (`→`/`←`/`c`, same keys as file copy, no new binding) mirrors its structure on the destination via `fsys.FileSystem.MkdirAll` (`os.MkdirAll`/`sftp.Client.MkdirAll`, both already walk the tree) and enqueues one worker-pool job per file, preserving relative paths. A mix of marked files and directories copies in one operation. A `MkdirAll`/`ReadDir` failure on one subtree is reported (via `m.statusMsg`) and that subtree is skipped, without aborting siblings — distinct from delete's stop-at-first-error, since a copy's file list is undiscovered until walked and can be far larger than delete's small, user-picked target list. No upfront confirmation or item count, matching existing file-copy UX
 
 **What's genuinely left** (not urgent, not blocking normal use):
-- Directory copy (currently shows "not supported")
 - View/edit operations
 - Multi-host sessions (one SSH connection at a time)
 - Transfer cancellation (Ctrl+C kills the whole app, partial files left on disk)
-- Recursive delete over SFTP is fully sequential (one round-trip per file/subdirectory, no progress or cancellation) — fine for small trees, slow with no feedback for large ones
+- Recursive delete and recursive copy over SFTP are fully sequential (one round-trip per file/subdirectory/`MkdirAll`, no progress or cancellation for the walk itself) — fine for small trees, slow with no feedback for large ones
 - UI logic (host form validation, path navigation) is undertested relative to `internal/fsys`/`internal/ui` file-op coverage
 
 ## Code Patterns & Guidelines
@@ -40,6 +40,7 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - eventsCh is buffered (cap 64)
 - jobsCh is buffered (cap 256)
 - On transfer message, always return `waitForEvent(m.eventsCh)` to re-arm the subscription
+- `enqueueCopyDirection`'s directory walk (`internal/ui/copyops.go`, `enqueueFileCopy`/`enqueueDirectoryCopy`) follows this same rule: the returned `tea.Cmd` only sends on `eventsCh`/`jobsCh` and calls the mutex-guarded `Model.allocateTransferID()`, never touching `m.queuePane`/`m.nextID`/`m.statusMsg` directly — `transferQueuedMsg`/`transferQueueErrorMsg` carry the discovery back to `Update()`, which is the only place that mutates them. `enqueueCopyDirection` itself also snapshots every `BrowserPane` field the walk needs (`Cwd`/`Entries`/`FS`) *before* returning that Cmd, since those fields have no synchronization either and `Enter()`/`Back()` mutate them directly from `Update()` — the walk only ever touches the snapshot afterward. (The walk can take long enough over SFTP, concurrently with the user navigating either pane and with other in-flight transfers' progress messages hitting the same `m.queuePane`, that none of this is optional the way it might look for a single fast local copy.)
 
 ### FileSystem interface
 
@@ -48,6 +49,7 @@ Both panes implement the same `fsys.FileSystem` interface. This eliminates code 
 - `Join(elem...)` → path.Join (POSIX) or filepath.Join (local)
 - `Open/Create` → io.ReadCloser / io.WriteCloser
 - `Stat(path)` → single Entry
+- `Remove`/`RemoveAll`/`Rename`/`Mkdir`/`MkdirAll` — all delegate straight to `os`/`sftp.Client` equivalents; no custom recursion is implemented anywhere in this codebase for delete or copy
 
 Outside `-t` test mode, the remote pane's `FS`/`Cwd` are never read before a real SSH connection: `Model.Init()` skips its `Refresh()`, `View()` shows `BrowserPane.EmptyMessage` instead of a listing, and `enqueueCopyDirection` refuses any transfer touching the remote pane while `!m.connected`. This prevents the remote pane from ever being mistaken for a live host. With `-t` (`Model.testMode`), it behaves as a `LocalFS` rooted at `/` from startup, which is what makes local-to-local testing possible without a live host — see README's "Testing locally" section.
 
@@ -89,9 +91,8 @@ Every user-facing string goes through `loc.T("message_id", args...)` rather than
 
 ## Known Limitations
 
-- Directories can't be copied (shows "not supported")
 - No view/edit
-- Recursive delete over SFTP has no progress reporting and can't be cancelled mid-delete
+- Recursive delete/copy over SFTP have no progress reporting for the walk itself and can't be cancelled mid-operation
 - No 1Password integration (explicitly deferred by user)
 - Transfer cancellation not implemented
 - Only one SSH connection per session

@@ -18,7 +18,7 @@ make build
 # '?' opens an About screen (logo, version, license)
 ```
 
-**What's left:** Directory copy, multi-host sessions, view/edit operations, transfer cancellation, and broader UI test coverage. None of these block normal single-host file transfer use.
+**What's left:** Multi-host sessions, view/edit operations, transfer cancellation, and broader UI test coverage. None of these block normal single-host file transfer use.
 
 **GitHub issues:** See https://github.com/brucevanhorn2/exfil/issues — treat as historical/roadmap notes; the SSH-wiring issues referenced there are done.
 
@@ -71,6 +71,7 @@ type FileSystem interface {
     RemoveAll(path string) error                 // Recursive delete
     Rename(oldPath, newPath string) error        // Rename/move
     Mkdir(path string) error                     // Create directory
+    MkdirAll(path string) error                  // Create directory + intermediates
 }
 ```
 
@@ -92,7 +93,9 @@ type FileSystem interface {
 func RunWithFS(job Job, events chan tea.Msg, src FileSystem, dst FileSystem)
 ```
 
-`enqueueCopyDirection(srcPane, dstPane *BrowserPane)` in `app.go` builds a `transfer.Job` carrying each pane's `FS`, so the worker doesn't need to know whether it's a local copy, upload, or download — it just calls `Open` on `src` and `Create` on `dst`.
+`enqueueCopyDirection(srcPane, dstPane *BrowserPane)` in `app.go` builds a `transfer.Job` carrying each pane's `FS`, so the worker doesn't need to know whether it's a local copy, upload, or download — it just calls `Open` on `src` and `Create` on `dst`. `RunWithFS` itself only ever handles one file per `Job`; it still refuses a directory (defense in depth — a `Job` should never legitimately be built for one).
+
+**Directory copy** (`internal/ui/copyops.go`): a marked directory is walked recursively (`enqueueDirectoryCopy`), calling `dstFS.MkdirAll` to mirror each directory before enqueueing its files (`enqueueFileCopy`, one per leaf, preserving relative paths). Neither function touches `Model` directly — they only send on `eventsCh`/`jobsCh` and call the mutex-guarded `Model.allocateTransferID()`, since the walk itself (many `ReadDir` calls, potentially over SFTP) can run long enough, concurrently with other in-flight transfers, to make directly mutating `m.queuePane`/`m.nextID` a real data race rather than a theoretical one. `transferQueuedMsg`/`transferQueueErrorMsg` carry the walker's discoveries back to `Update()`, which is the only place that mutates the queue pane. A `MkdirAll`/`ReadDir` failure skips just that subtree (reported via `m.statusMsg`) rather than aborting the rest of the operation. `enqueueCopyDirection` (`app.go`) itself snapshots every `BrowserPane` field the walk needs (`Cwd`/`Entries`/`FS`) synchronously, before returning the `tea.Cmd` — those fields have no synchronization either (`Enter()`/`Back()` mutate them directly), so the walk only ever reads the snapshot afterward, never the live pane.
 
 **Progress tracking:** `progressWriter` wraps the destination, throttles to ~6 msgs/sec, emits `TransferProgressMsg`.
 
@@ -191,11 +194,10 @@ exfil/
 
 None of these block normal use; pick whichever matches what you're asked to do:
 
-1. **Directory copy support** — currently `enqueueCopyDirection` in `app.go` skips directories with a "not supported" status message.
-2. **View/edit operations** — delete (`d`, including recursive delete of non-empty directories), rename (`r`), and mkdir (`m`) are implemented (`internal/ui/fileops.go`, `internal/fsys`); viewing/editing a file's contents in-app is not.
-3. **Multi-host sessions** — `Model` holds a single `*ssh.Client`/`*sftp.Client`; switching hosts mid-session isn't supported.
-4. **Test coverage** — `internal/fsys` and `internal/ui` now have real coverage (see `local_test.go`, `app_test.go`), but `HostFormPane.buildHost()` validation, `BrowserPane.Back()` path logic, and `BrowserPane.ensureVisible()` scrolling are still good next targets.
-5. **Transfer cancellation** — Ctrl+C kills the whole app; partial files are left on disk.
+1. **View/edit operations** — delete (`d`, including recursive delete of non-empty directories), rename (`r`), mkdir (`m`), and recursive directory copy (`→`/`←`/`c`) are all implemented (`internal/ui/fileops.go`, `internal/ui/copyops.go`, `internal/fsys`); viewing/editing a file's contents in-app is not.
+2. **Multi-host sessions** — `Model` holds a single `*ssh.Client`/`*sftp.Client`; switching hosts mid-session isn't supported.
+3. **Test coverage** — `internal/fsys` and `internal/ui` now have real coverage (see `local_test.go`, `app_test.go`), but `HostFormPane.buildHost()` validation, `BrowserPane.Back()` path logic, and `BrowserPane.ensureVisible()` scrolling are still good next targets.
+4. **Transfer cancellation** — Ctrl+C kills the whole app; partial files are left on disk.
 
 ---
 

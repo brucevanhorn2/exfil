@@ -58,6 +58,30 @@ func TestLocalFSRemoveAllRemovesPopulatedTree(t *testing.T) {
 	}
 }
 
+func TestLocalFSMkdirAllCreatesIntermediateDirs(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "a", "b", "c")
+
+	if err := (LocalFS{}).MkdirAll(nested); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	info, err := os.Stat(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected %s to be a directory", nested)
+	}
+}
+
+func TestLocalFSMkdirAllSucceedsIfAlreadyExists(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := (LocalFS{}).MkdirAll(dir); err != nil {
+		t.Fatalf("MkdirAll on an existing dir should succeed, got: %v", err)
+	}
+}
+
 func TestLocalFSRename(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := filepath.Join(dir, "old.txt")
