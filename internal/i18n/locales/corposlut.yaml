@@ -46,6 +46,8 @@ settings_hint: "[Tab/Shift+Tab] move  [←/→] cycle  [Enter] submit  [Esc] can
 confirm_delete_header: " Decommission "
 confirm_delete_message: "Decommission %d deliverable(s): %s?"
 confirm_delete_hint: "[y] approve  [n/esc] cancel"
+confirm_delete_recursive_header: " ESCALATION: Bulk Decommission "
+confirm_delete_recursive_message: "Decommission %d deliverable(s) AND ALL DOWNSTREAM ASSETS: %s? This action is irreversible and unaudited."
 rename_header: " Rebrand - [Enter] submit  [Esc] cancel "
 mkdir_header: " New Directory - [Enter] provision  [Esc] cancel "
 err_name_invalid: "name cannot contain '/'"

@@ -20,13 +20,15 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ Remote pane stays empty (with a "press `s` to connect" hint) until a real SSH connection is made — never defaults to browsing the local filesystem in normal use; `-t` opts back into that for local-to-local test transfers
 - ✅ Gradient/neon chrome (`internal/ui/gradient.go`): borders, titles, and the progress bar render as a primary→secondary gradient instead of a flat color; unfocused panes use a muted (50%-toward-black) variant
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
-- ✅ File operations: delete (`d`, with Y/N confirm — works on the cursor file or all marked files), rename (`r`), mkdir (`m`), on both local and remote (SFTP) panes; all three refresh the current pane's listing afterward. Delete is intentionally non-recursive — `os.Remove`/`sftp.Client.Remove` both reject non-empty directories, which is what keeps this in scope without extra logic (recursive delete tracked separately in issue #15)
+- ✅ File operations: delete (`d`, with Y/N confirm — works on the cursor file or all marked files), rename (`r`), mkdir (`m`), on both local and remote (SFTP) panes; all three refresh the current pane's listing afterward
+- ✅ Recursive directory delete: marking a non-empty directory and pressing `d` escalates the confirm screen to stronger wording (`ConfirmPane`'s header/message keys picked via `Model.confirmDeleteRecursive`, same convention as `ScreenPrompt`'s header selection) and uses `fsys.FileSystem.RemoveAll` (`os.RemoveAll`/`sftp.Client.RemoveAll` — both already walk the tree, no custom recursion written); a mix of marked files and non-empty directories can be deleted in one operation, with `deleteTarget.IsDir` picking `Remove` vs `RemoveAll` per entry. No upfront item count or emptiness check — computing one would mean walking the tree just to decide before showing the prompt
 
 **What's genuinely left** (not urgent, not blocking normal use):
 - Directory copy (currently shows "not supported")
-- Recursive directory delete (issue #15) and view/edit operations
+- View/edit operations
 - Multi-host sessions (one SSH connection at a time)
 - Transfer cancellation (Ctrl+C kills the whole app, partial files left on disk)
+- Recursive delete over SFTP is fully sequential (one round-trip per file/subdirectory, no progress or cancellation) — fine for small trees, slow with no feedback for large ones
 - UI logic (host form validation, path navigation) is undertested relative to `internal/fsys`/`internal/ui` file-op coverage
 
 ## Code Patterns & Guidelines
@@ -57,7 +59,7 @@ Outside `-t` test mode, the remote pane's `FS`/`Cwd` are never read before a rea
 
 ### Screen state machine (`internal/ui/app.go`)
 
-`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, `ScreenAbout`, and `ScreenSettings`. Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
+`Model.screen` selects between `ScreenBrowsing`, `ScreenHostPicker`, `ScreenAddHost`, `ScreenAbout`, `ScreenSettings`, `ScreenPrompt` (shared rename/mkdir text input, distinguished by `Model.promptMode`), and `ScreenConfirmDelete` (Y/N delete confirmation). Each screen has its own `handle*Key` function; `Update()` routes `tea.KeyMsg` to the right one based on `m.screen`. `View()` swaps in the corresponding pane's rendering when not on `ScreenBrowsing`.
 
 The browsing screen keeps a **persistent hint bar** (key bindings) separate from `m.statusMsg` (transient messages like "Connected to..." or errors) — don't let transient status overwrite the hints; they're rendered as two separate lines in `View()`.
 
@@ -88,7 +90,8 @@ Every user-facing string goes through `loc.T("message_id", args...)` rather than
 ## Known Limitations
 
 - Directories can't be copied (shows "not supported")
-- Delete is non-recursive (empty dirs/files only — see issue #15); no view/edit
+- No view/edit
+- Recursive delete over SFTP has no progress reporting and can't be cancelled mid-delete
 - No 1Password integration (explicitly deferred by user)
 - Transfer cancellation not implemented
 - Only one SSH connection per session

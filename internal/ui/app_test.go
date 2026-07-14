@@ -367,8 +367,8 @@ func TestHandleBrowsingKeyDeleteFlow(t *testing.T) {
 	if m.screen != ScreenConfirmDelete {
 		t.Fatalf("expected ScreenConfirmDelete after 'd', got %v", m.screen)
 	}
-	if len(m.confirmDeleteNames) != 1 || m.confirmDeleteNames[0] != "victim.txt" {
-		t.Fatalf("expected confirmDeleteNames to be [victim.txt], got %v", m.confirmDeleteNames)
+	if len(m.confirmDeleteTargets) != 1 || m.confirmDeleteTargets[0].Name != "victim.txt" || m.confirmDeleteTargets[0].IsDir {
+		t.Fatalf("expected confirmDeleteTargets to be [{victim.txt false}], got %v", m.confirmDeleteTargets)
 	}
 
 	newModel, cmd := m.handleConfirmDeleteKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
@@ -390,6 +390,140 @@ func TestHandleBrowsingKeyDeleteFlow(t *testing.T) {
 	}
 }
 
+// TestHandleBrowsingKeyDeleteRecursiveFlow drives d -> confirm(y) on a
+// non-empty marked directory (issue #15): the whole tree should be removed
+// via RemoveAll, and the confirm screen should have escalated to the
+// recursive header/message.
+func TestHandleBrowsingKeyDeleteRecursiveFlow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	sub := filepath.Join(localDir, "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "child.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenConfirmDelete {
+		t.Fatalf("expected ScreenConfirmDelete after 'd', got %v", m.screen)
+	}
+	if len(m.confirmDeleteTargets) != 1 || m.confirmDeleteTargets[0].Name != "sub" || !m.confirmDeleteTargets[0].IsDir {
+		t.Fatalf("expected confirmDeleteTargets to be [{sub true}], got %v", m.confirmDeleteTargets)
+	}
+	if !m.confirmDeleteRecursive {
+		t.Error("expected confirmDeleteRecursive to be true when a directory is marked")
+	}
+
+	newModel, cmd := m.handleConfirmDeleteKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = newModel.(*Model)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from handleConfirmDeleteKey")
+	}
+	m = drainCmd(m, cmd)
+
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Fatalf("expected sub (and everything inside it) to be deleted, stat err = %v", err)
+	}
+	if len(m.localPane.Entries) != 0 {
+		t.Errorf("expected pane to be refreshed with no entries, got %v", m.localPane.Entries)
+	}
+}
+
+// TestHandleBrowsingKeyDeleteMixedSelectionFlow marks one plain file and one
+// non-empty directory together (issue #15's "mixed selection" decision):
+// a single d/confirm should remove both, using Remove for the file and
+// RemoveAll for the directory.
+func TestHandleBrowsingKeyDeleteMixedSelectionFlow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	sub := filepath.Join(localDir, "sub")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "child.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "file.txt"), []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark both entries (cursor starts on "file.txt" — dirs sort first, so
+	// "sub" is entry 0 and "file.txt" is entry 1).
+	m.localPane.ToggleSelect()
+	m.localPane.Down()
+	m.localPane.ToggleSelect()
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = newModel.(*Model)
+
+	if len(m.confirmDeleteTargets) != 2 {
+		t.Fatalf("expected both marked entries in confirmDeleteTargets, got %v", m.confirmDeleteTargets)
+	}
+
+	newModel, cmd := m.handleConfirmDeleteKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = newModel.(*Model)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from handleConfirmDeleteKey")
+	}
+	drainCmd(m, cmd)
+
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Errorf("expected sub to be deleted, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "file.txt")); !os.IsNotExist(err) {
+		t.Errorf("expected file.txt to be deleted, stat err = %v", err)
+	}
+}
+
+// TestHandleBrowsingKeyDeleteNonRecursiveMessageForFiles confirms plain
+// files still get the original (non-escalated) confirm wording — the
+// recursive header/message must only trigger when a directory is involved.
+func TestHandleBrowsingKeyDeleteNonRecursiveMessageForFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "file.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = newModel.(*Model)
+
+	if m.confirmDeleteRecursive {
+		t.Error("expected confirmDeleteRecursive to be false for a file-only delete")
+	}
+}
+
 // TestHandleConfirmDeleteKeyCancel confirms "n"/"esc" abort without touching
 // the filesystem.
 func TestHandleConfirmDeleteKeyCancel(t *testing.T) {
@@ -407,7 +541,7 @@ func TestHandleConfirmDeleteKeyCancel(t *testing.T) {
 	if err := m.localPane.Refresh(); err != nil {
 		t.Fatal(err)
 	}
-	m.confirmDeleteNames = []string{"keepme.txt"}
+	m.confirmDeleteTargets = []deleteTarget{{Name: "keepme.txt"}}
 	m.confirmDeletePaneName = "local"
 	m.screen = ScreenConfirmDelete
 

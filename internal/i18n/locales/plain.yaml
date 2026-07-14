@@ -46,6 +46,8 @@ settings_hint: "[Tab/Shift+Tab] move  [←/→] cycle pack  [Enter] save  [Esc] 
 confirm_delete_header: " Delete "
 confirm_delete_message: "Delete %d item(s): %s?"
 confirm_delete_hint: "[y] yes  [n/esc] cancel"
+confirm_delete_recursive_header: " DANGER: Recursive Delete "
+confirm_delete_recursive_message: "Delete %d item(s) AND EVERYTHING INSIDE THEM: %s? This cannot be undone."
 rename_header: " Rename - [Enter] save  [Esc] cancel "
 mkdir_header: " New Directory - [Enter] create  [Esc] cancel "
 err_name_invalid: "name cannot contain '/'"

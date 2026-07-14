@@ -51,6 +51,15 @@ func (lfs LocalFS) Remove(path string) error {
 	return os.Remove(path)
 }
 
+// RemoveAll silently succeeds if path is already gone (os.RemoveAll's
+// documented behavior) — unlike RemoteFS.RemoveAll, which Stats first and
+// errors on a missing path. In deleteCmd's stop-at-first-error loop over
+// multiple targets, that asymmetry only matters if something external
+// deletes a marked target between marking and confirming.
+func (lfs LocalFS) RemoveAll(path string) error {
+	return os.RemoveAll(path)
+}
+
 func (lfs LocalFS) Rename(oldPath, newPath string) error {
 	return os.Rename(oldPath, newPath)
 }

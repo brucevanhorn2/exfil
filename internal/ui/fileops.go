@@ -23,13 +23,29 @@ type fileOpDoneMsg struct {
 	err    error
 }
 
-// deleteCmd removes each named entry (file or empty dir) from cwd, off the
-// UI thread since RemoteFS.Remove is a network round-trip. It stops at the
-// first error rather than continuing, so the reported error is unambiguous.
-func deleteCmd(fs fsys.FileSystem, cwd string, names []string, pane string) tea.Cmd {
+// deleteTarget names one entry marked for deletion and whether it's a
+// directory — decides Remove (file or empty dir) vs RemoveAll (recursive)
+// per entry, so one delete operation can mix plain files and non-empty
+// directories (issue #15).
+type deleteTarget struct {
+	Name  string
+	IsDir bool
+}
+
+// deleteCmd removes each target from cwd, off the UI thread since
+// RemoteFS.Remove/RemoveAll is a network round-trip. It stops at the first
+// error rather than continuing, so the reported error is unambiguous.
+func deleteCmd(fs fsys.FileSystem, cwd string, targets []deleteTarget, pane string) tea.Cmd {
 	return func() tea.Msg {
-		for _, name := range names {
-			if err := fs.Remove(fs.Join(cwd, name)); err != nil {
+		for _, t := range targets {
+			path := fs.Join(cwd, t.Name)
+			var err error
+			if t.IsDir {
+				err = fs.RemoveAll(path)
+			} else {
+				err = fs.Remove(path)
+			}
+			if err != nil {
 				return fileOpDoneMsg{pane: pane, action: "delete", err: err}
 			}
 		}
