@@ -47,6 +47,18 @@ func (lfs LocalFS) Create(path string) (io.WriteCloser, error) {
 	return os.Create(path)
 }
 
+func (lfs LocalFS) Remove(path string) error {
+	return os.Remove(path)
+}
+
+func (lfs LocalFS) Rename(oldPath, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+
+func (lfs LocalFS) Mkdir(path string) error {
+	return os.Mkdir(path, 0755)
+}
+
 func (lfs LocalFS) Stat(path string) (*Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {

@@ -20,13 +20,14 @@ The MVP is functionally complete and has been verified end-to-end against a real
 - ✅ Remote pane stays empty (with a "press `s` to connect" hint) until a real SSH connection is made — never defaults to browsing the local filesystem in normal use; `-t` opts back into that for local-to-local test transfers
 - ✅ Gradient/neon chrome (`internal/ui/gradient.go`): borders, titles, and the progress bar render as a primary→secondary gradient instead of a flat color; unfocused panes use a muted (50%-toward-black) variant
 - ✅ CI (GitHub Actions): build, `go vet`, `gofmt` check on every push
+- ✅ File operations: delete (`d`, with Y/N confirm — works on the cursor file or all marked files), rename (`r`), mkdir (`m`), on both local and remote (SFTP) panes; all three refresh the current pane's listing afterward. Delete is intentionally non-recursive — `os.Remove`/`sftp.Client.Remove` both reject non-empty directories, which is what keeps this in scope without extra logic (recursive delete tracked separately in issue #15)
 
 **What's genuinely left** (not urgent, not blocking normal use):
 - Directory copy (currently shows "not supported")
-- Delete / rename / mkdir / view-edit operations
+- Recursive directory delete (issue #15) and view/edit operations
 - Multi-host sessions (one SSH connection at a time)
 - Transfer cancellation (Ctrl+C kills the whole app, partial files left on disk)
-- Only one test file exists (`internal/transfer/copy_smoke_test.go`); UI logic (host form validation, path navigation) is undertested
+- UI logic (host form validation, path navigation) is undertested relative to `internal/fsys`/`internal/ui` file-op coverage
 
 ## Code Patterns & Guidelines
 
@@ -87,7 +88,7 @@ Every user-facing string goes through `loc.T("message_id", args...)` rather than
 ## Known Limitations
 
 - Directories can't be copied (shows "not supported")
-- No delete, rename, mkdir, view/edit
+- Delete is non-recursive (empty dirs/files only — see issue #15); no view/edit
 - No 1Password integration (explicitly deferred by user)
 - Transfer cancellation not implemented
 - Only one SSH connection per session

@@ -17,6 +17,22 @@ func testLogger() *log.Logger {
 	return log.New(os.Stderr, "", 0)
 }
 
+// drainCmd repeatedly runs cmd and feeds its message back into m.Update,
+// following any further Cmd it returns, until none remain. fileOpDoneMsg's
+// handler returns a readDirCmd (off-UI-thread refresh) rather than calling
+// Refresh() synchronously, so tests need to chain through it — the same
+// pattern TestTransferDoneMsgRefreshesDestinationPane drives by hand for the
+// transfer-completion path.
+func drainCmd(m *Model, cmd tea.Cmd) *Model {
+	for cmd != nil {
+		msg := cmd()
+		var newModel tea.Model
+		newModel, cmd = m.Update(msg)
+		m = newModel.(*Model)
+	}
+	return m
+}
+
 func TestNewModelDefaultsWhenConfigEmpty(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -323,4 +339,295 @@ func TestTransferDestConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestHandleBrowsingKeyDeleteFlow drives the full d -> confirm(y) -> refresh
+// path (issue #4): pressing "d" on the file under the cursor should move to
+// ScreenConfirmDelete, and confirming should remove the file from disk and
+// re-list the pane.
+func TestHandleBrowsingKeyDeleteFlow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "victim.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenConfirmDelete {
+		t.Fatalf("expected ScreenConfirmDelete after 'd', got %v", m.screen)
+	}
+	if len(m.confirmDeleteNames) != 1 || m.confirmDeleteNames[0] != "victim.txt" {
+		t.Fatalf("expected confirmDeleteNames to be [victim.txt], got %v", m.confirmDeleteNames)
+	}
+
+	newModel, cmd := m.handleConfirmDeleteKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = newModel.(*Model)
+	if m.screen != ScreenBrowsing {
+		t.Errorf("expected to return to ScreenBrowsing after confirming delete, got %v", m.screen)
+	}
+	if cmd == nil {
+		t.Fatal("expected a Cmd from handleConfirmDeleteKey")
+	}
+
+	m = drainCmd(m, cmd)
+
+	if _, err := os.Stat(filepath.Join(localDir, "victim.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected victim.txt to be deleted, stat err = %v", err)
+	}
+	if len(m.localPane.Entries) != 0 {
+		t.Errorf("expected pane to be refreshed with no entries, got %v", m.localPane.Entries)
+	}
+}
+
+// TestHandleConfirmDeleteKeyCancel confirms "n"/"esc" abort without touching
+// the filesystem.
+func TestHandleConfirmDeleteKeyCancel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "keepme.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	m.confirmDeleteNames = []string{"keepme.txt"}
+	m.confirmDeletePaneName = "local"
+	m.screen = ScreenConfirmDelete
+
+	newModel, cmd := m.handleConfirmDeleteKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenBrowsing {
+		t.Errorf("expected ScreenBrowsing after cancel, got %v", m.screen)
+	}
+	if cmd != nil {
+		t.Error("expected no Cmd after cancelling delete")
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "keepme.txt")); err != nil {
+		t.Errorf("expected keepme.txt to survive cancel, stat err = %v", err)
+	}
+}
+
+// TestHandleBrowsingKeyRenameFlow drives r -> edit -> Enter, verifying the
+// file is renamed on disk and the pane refreshed.
+func TestHandleBrowsingKeyRenameFlow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "old.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenPrompt || m.promptMode != "rename" {
+		t.Fatalf("expected ScreenPrompt/rename after 'r', got screen=%v mode=%q", m.screen, m.promptMode)
+	}
+	if m.promptPane.Value() != "old.txt" {
+		t.Errorf("expected prompt pre-filled with old.txt, got %q", m.promptPane.Value())
+	}
+
+	m.promptPane.Input.SetValue("new.txt")
+	newModel, cmd := m.handlePromptKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenBrowsing {
+		t.Errorf("expected ScreenBrowsing after rename Enter, got %v", m.screen)
+	}
+	if cmd == nil {
+		t.Fatal("expected a Cmd from handlePromptKey")
+	}
+	drainCmd(m, cmd)
+
+	if _, err := os.Stat(filepath.Join(localDir, "old.txt")); !os.IsNotExist(err) {
+		t.Errorf("expected old.txt to be gone, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "new.txt")); err != nil {
+		t.Errorf("expected new.txt to exist, stat err = %v", err)
+	}
+}
+
+// TestHandleBrowsingKeyRenameRefusesExistingTarget guards against silent
+// data loss: os.Rename (LocalFS) would otherwise overwrite an existing
+// destination with no warning, unlike delete which requires explicit Y/N
+// confirmation for the same feature.
+func TestHandleBrowsingKeyRenameRefusesExistingTarget(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "old.txt"), []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "taken.txt"), []byte("do not overwrite"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = newModel.(*Model)
+
+	m.promptPane.Input.SetValue("taken.txt")
+	newModel, cmd := m.handlePromptKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from handlePromptKey")
+	}
+	m = drainCmd(m, cmd)
+
+	got, err := os.ReadFile(filepath.Join(localDir, "taken.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "do not overwrite" {
+		t.Errorf("taken.txt was overwritten by rename; got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(localDir, "old.txt")); err != nil {
+		t.Errorf("expected old.txt to still exist since rename was refused, stat err = %v", err)
+	}
+	if m.statusMsg == "" || m.statusMsg == "Ready." {
+		t.Errorf("expected an error status message, got %q", m.statusMsg)
+	}
+}
+
+// TestHandleBrowsingKeyRenameNoOpDoesNotError guards against a rough edge
+// found in review: submitting the rename prompt without changing the name
+// would otherwise hit the same destination-exists check as a real collision
+// (Stat finds the file being "renamed" since it's the same path), showing a
+// confusing "already exists" error for what should be a harmless no-op.
+func TestHandleBrowsingKeyRenameNoOpDoesNotError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "same.txt"), []byte("unchanged"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	m.statusMsg = "Ready."
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = newModel.(*Model)
+
+	// Don't touch m.promptPane's value — submit exactly the pre-filled name.
+	newModel, cmd := m.handlePromptKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenBrowsing {
+		t.Errorf("expected ScreenBrowsing after no-op rename Enter, got %v", m.screen)
+	}
+	if cmd != nil {
+		t.Error("expected no Cmd for a no-op rename (nothing to do, no I/O to perform)")
+	}
+	if m.statusMsg != "Ready." {
+		t.Errorf("expected no error status message for a no-op rename, got %q", m.statusMsg)
+	}
+	got, err := os.ReadFile(filepath.Join(localDir, "same.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "unchanged" {
+		t.Errorf("expected same.txt to be untouched, got %q", got)
+	}
+}
+
+// TestHandleBrowsingKeyMkdirFlow drives m -> type a name -> Enter, verifying
+// the directory is created on disk and the pane refreshed.
+func TestHandleBrowsingKeyMkdirFlow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenPrompt || m.promptMode != "mkdir" {
+		t.Fatalf("expected ScreenPrompt/mkdir after 'm', got screen=%v mode=%q", m.screen, m.promptMode)
+	}
+
+	m.promptPane.Input.SetValue("newdir")
+	newModel, cmd := m.handlePromptKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if cmd == nil {
+		t.Fatal("expected a Cmd from handlePromptKey")
+	}
+	drainCmd(m, cmd)
+
+	info, err := os.Stat(filepath.Join(localDir, "newdir"))
+	if err != nil {
+		t.Fatalf("expected newdir to exist, stat err = %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected newdir to be a directory")
+	}
+}
+
+// TestHandleBrowsingKeyFileOpsBlockDisconnectedRemote guards d/r/m the same
+// way TestEnqueueCopyDirectionBlocksDisconnectedRemote guards transfers: none
+// of them should touch the remote pane before a real SSH connection exists.
+func TestHandleBrowsingKeyFileOpsBlockDisconnectedRemote(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.SetFocus(false)
+	m.remotePane.SetFocus(true)
+
+	for _, key := range []string{"d", "r", "m"} {
+		newModel, cmd := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		m = newModel.(*Model)
+		if m.screen != ScreenBrowsing {
+			t.Errorf("key %q: expected to stay on ScreenBrowsing while disconnected, got %v", key, m.screen)
+		}
+		if cmd != nil {
+			t.Errorf("key %q: expected no Cmd while disconnected", key)
+		}
+	}
 }
