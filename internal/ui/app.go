@@ -75,8 +75,9 @@ type Model struct {
 	promptPaneName string // "local" or "remote": which BrowserPane the op targets
 	promptOldName  string // only used for rename
 
-	confirmDeleteNames    []string
-	confirmDeletePaneName string
+	confirmDeleteTargets   []deleteTarget
+	confirmDeletePaneName  string
+	confirmDeleteRecursive bool
 	// transferDest maps an in-flight transfer's ID to which pane ("local" or
 	// "remote") it's copying into, so TransferDoneMsg knows which pane to
 	// refresh. Entries are removed once the transfer finishes or errors.
@@ -417,9 +418,36 @@ func (m *Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = m.loc.T("status_no_files_selected")
 			return m, nil
 		}
-		m.confirmDeleteNames = files
+		// IsDir is snapshotted here (from the already-loaded listing) and not
+		// re-checked when "y" confirms — same accepted TOCTOU tradeoff as
+		// rename's destination-exists check: a concurrent external change to
+		// the target between marking and confirming is a narrow, essentially
+		// theoretical race for a single-user desktop TUI, not worth an extra
+		// Stat round-trip to defend against.
+		targets := make([]deleteTarget, len(files))
+		anyDir := false
+		for i, name := range files {
+			isDir := false
+			if entry := active.EntryByName(name); entry != nil {
+				isDir = entry.IsDir
+			}
+			targets[i] = deleteTarget{Name: name, IsDir: isDir}
+			anyDir = anyDir || isDir
+		}
+		m.confirmDeleteTargets = targets
 		m.confirmDeletePaneName = m.paneName(active)
-		m.confirmPane.Message = m.loc.T("confirm_delete_message", len(files), strings.Join(files, ", "))
+		// A marked directory escalates to the stronger recursive wording —
+		// deliberately with no upfront "is it actually empty?" check (that
+		// would mean walking the tree just to decide, doubling round-trips
+		// on a remote/SFTP pane before the user even sees the prompt), so
+		// any marked directory gets the recursive warning even if it turns
+		// out to be empty.
+		m.confirmDeleteRecursive = anyDir
+		msgKey := "confirm_delete_message"
+		if anyDir {
+			msgKey = "confirm_delete_recursive_message"
+		}
+		m.confirmPane.Message = m.loc.T(msgKey, len(files), strings.Join(files, ", "))
 		m.screen = ScreenConfirmDelete
 	case "r":
 		if m.remoteBlocked(active) {
@@ -516,13 +544,15 @@ func (m *Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		pane := m.paneByName(m.confirmDeletePaneName)
-		names := m.confirmDeleteNames
+		targets := m.confirmDeleteTargets
 		paneName := m.confirmDeletePaneName
-		m.confirmDeleteNames = nil
+		m.confirmDeleteTargets = nil
+		m.confirmDeleteRecursive = false
 		m.screen = ScreenBrowsing
-		return m, deleteCmd(pane.FS, pane.Cwd, names, paneName)
+		return m, deleteCmd(pane.FS, pane.Cwd, targets, paneName)
 	case "n", "N", "esc":
-		m.confirmDeleteNames = nil
+		m.confirmDeleteTargets = nil
+		m.confirmDeleteRecursive = false
 		m.screen = ScreenBrowsing
 	}
 	return m, nil
@@ -806,7 +836,11 @@ func (m *Model) View() string {
 		}
 		content = m.promptPane.View(m.theme, m.loc, headerKey)
 	case ScreenConfirmDelete:
-		content = m.confirmPane.View(m.theme, m.loc)
+		confirmHeaderKey := "confirm_delete_header"
+		if m.confirmDeleteRecursive {
+			confirmHeaderKey = "confirm_delete_recursive_header"
+		}
+		content = m.confirmPane.View(m.theme, m.loc, confirmHeaderKey)
 	}
 
 	status := m.statusMsg
@@ -867,15 +901,8 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 		}
 
 		for _, filename := range files {
-			entry := &fsys.Entry{}
-			for _, e := range srcPane.Entries {
-				if e.Name == filename {
-					entry = &e
-					break
-				}
-			}
-
-			if entry.IsDir {
+			entry := srcPane.EntryByName(filename)
+			if entry != nil && entry.IsDir {
 				m.statusMsg = m.loc.T("status_dir_not_supported")
 				continue
 			}
@@ -887,11 +914,16 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
 			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)
 
+			var size int64
+			if entry != nil {
+				size = entry.Size
+			}
+
 			m.queuePane.AddTransfer(Transfer{
 				ID:       id,
 				Filename: filename,
 				Status:   StatusQueued,
-				Total:    entry.Size,
+				Total:    size,
 			})
 
 			job := transfer.Job{

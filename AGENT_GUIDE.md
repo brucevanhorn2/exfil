@@ -18,7 +18,7 @@ make build
 # '?' opens an About screen (logo, version, license)
 ```
 
-**What's left:** Directory copy, delete/rename/mkdir, multi-host sessions, auto-refresh of the destination pane after a transfer, and broader test coverage. None of these block normal single-host file transfer use.
+**What's left:** Directory copy, multi-host sessions, view/edit operations, transfer cancellation, and broader UI test coverage. None of these block normal single-host file transfer use.
 
 **GitHub issues:** See https://github.com/brucevanhorn2/exfil/issues — treat as historical/roadmap notes; the SSH-wiring issues referenced there are done.
 
@@ -61,12 +61,16 @@ Both panes (local and remote) use the same `fsys.FileSystem` interface:
 
 ```go
 type FileSystem interface {
-    ReadDir(path string) ([]Entry, error)      // List directory
-    Join(elem ...string) string                // Join paths
-    Home() (string, error)                     // User home
-    Open(path string) (io.ReadCloser, error)  // Read file
+    ReadDir(path string) ([]Entry, error)       // List directory
+    Join(elem ...string) string                 // Join paths
+    Home() (string, error)                      // User home
+    Open(path string) (io.ReadCloser, error)   // Read file
     Create(path string) (io.WriteCloser, error) // Write file
-    Stat(path string) (*Entry, error)         // File info
+    Stat(path string) (*Entry, error)          // File info
+    Remove(path string) error                   // Delete file or empty dir
+    RemoveAll(path string) error                 // Recursive delete
+    Rename(oldPath, newPath string) error        // Rename/move
+    Mkdir(path string) error                     // Create directory
 }
 ```
 
@@ -188,11 +192,10 @@ exfil/
 None of these block normal use; pick whichever matches what you're asked to do:
 
 1. **Directory copy support** — currently `enqueueCopyDirection` in `app.go` skips directories with a "not supported" status message.
-2. **Delete/rename/mkdir/view-edit** — not implemented at all.
+2. **View/edit operations** — delete (`d`, including recursive delete of non-empty directories), rename (`r`), and mkdir (`m`) are implemented (`internal/ui/fileops.go`, `internal/fsys`); viewing/editing a file's contents in-app is not.
 3. **Multi-host sessions** — `Model` holds a single `*ssh.Client`/`*sftp.Client`; switching hosts mid-session isn't supported.
-4. **Auto-refresh after transfer** — `transfer.TransferDoneMsg`'s handler in `app.go` has a `// TODO (M4)` comment; the destination pane doesn't reload its listing when a transfer completes.
-5. **Test coverage** — only `internal/transfer/copy_smoke_test.go` exists. Good next targets: `HostFormPane.buildHost()` validation, `BrowserPane.Back()` path logic, `BrowserPane.ensureVisible()` scrolling.
-6. **Transfer cancellation** — Ctrl+C kills the whole app; partial files are left on disk.
+4. **Test coverage** — `internal/fsys` and `internal/ui` now have real coverage (see `local_test.go`, `app_test.go`), but `HostFormPane.buildHost()` validation, `BrowserPane.Back()` path logic, and `BrowserPane.ensureVisible()` scrolling are still good next targets.
+5. **Transfer cancellation** — Ctrl+C kills the whole app; partial files are left on disk.
 
 ---
 

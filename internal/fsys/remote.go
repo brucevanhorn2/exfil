@@ -58,6 +58,14 @@ func (rfs *RemoteFS) Remove(path string) error {
 	return rfs.client.Remove(path)
 }
 
+// RemoveAll errors on a missing path (sftp.Client.RemoveAll Stats first) —
+// unlike LocalFS.RemoveAll (os.RemoveAll silently succeeds if already gone).
+// See LocalFS.RemoveAll's comment for why this asymmetry is accepted rather
+// than papered over.
+func (rfs *RemoteFS) RemoveAll(path string) error {
+	return rfs.client.RemoveAll(path)
+}
+
 func (rfs *RemoteFS) Rename(oldPath, newPath string) error {
 	return rfs.client.Rename(oldPath, newPath)
 }

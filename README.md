@@ -31,8 +31,8 @@ Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue,
 - ✅ About screen (`?`) — logo, version, license
 - ✅ Selectable lingo packs (plain/secretsquirrel/keyboardcowboy/corposlut) and free-form hex theme colors via the Settings screen (`S`)
 - ✅ Gradient/neon chrome: pane borders, titles, and the transfer progress bar all render as a color gradient between your chosen primary/secondary theme colors, instead of a flat color
+- ✅ File operations, on both local and remote panes: delete (`d`, single file or all marked, Y/N confirm — recurses with a stronger warning if a marked directory isn't empty), rename (`r`), mkdir (`m`)
 - ⏳ Directory copy support
-- ⏳ Delete/rename/mkdir operations
 - ⏳ Multi-host sessions (currently one SSH connection at a time)
 
 ## Building
@@ -58,6 +58,9 @@ Controls:
 - **Space** — toggle select file
 - **→** — push selected file(s) from local to remote
 - **←** — pull selected file(s) from remote to local
+- **d** — delete the file under the cursor, or all marked files (Y/N confirm; recurses into non-empty marked directories)
+- **r** — rename the file under the cursor
+- **m** — create a new directory in the current pane
 - **s** — open the Site Manager (connect to a saved host; `n` to add, `e` to edit)
 - **S** — Settings (lingo pack, theme colors)
 - **?** — about screen
@@ -96,6 +99,10 @@ type FileSystem interface {
     Open(path string) (io.ReadCloser, error)
     Create(path string) (io.WriteCloser, error)
     Stat(path string) (*Entry, error)
+    Remove(path string) error
+    RemoveAll(path string) error
+    Rename(oldPath, newPath string) error
+    Mkdir(path string) error
 }
 ```
 
@@ -129,10 +136,10 @@ echo "test content" > /tmp/exfil-test/a/file1.txt
 
 - Directories cannot be copied (shows "not supported" message)
 - Single SSH connection per session (no switching between hosts mid-run)
-- No delete, rename, mkdir, or view/edit operations
+- No view/edit operations
+- Recursive delete over SFTP has no progress reporting and can't be cancelled mid-delete
 - No 1Password integration
-- No recursive directory sync
-- Destination pane listing doesn't auto-refresh after a transfer completes (navigate away and back to see the new file)
+- No recursive directory sync (bidirectional sync between directories, not to be confused with recursive delete above)
 
 ## Logs
 

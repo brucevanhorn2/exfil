@@ -149,6 +149,17 @@ func (b *BrowserPane) CurrentFile() *fsys.Entry {
 	return &b.Entries[b.Cursor]
 }
 
+// EntryByName looks up an entry in the current listing by name, or nil if
+// not present.
+func (b *BrowserPane) EntryByName(name string) *fsys.Entry {
+	for i := range b.Entries {
+		if b.Entries[i].Name == name {
+			return &b.Entries[i]
+		}
+	}
+	return nil
+}
+
 func (b *BrowserPane) View(theme Theme) string {
 	from, to := theme.MutedPrimaryColor, theme.MutedSecondaryColor
 	if b.Focus {

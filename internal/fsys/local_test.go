@@ -36,6 +36,28 @@ func TestLocalFSRemoveNonEmptyDirFails(t *testing.T) {
 	}
 }
 
+func TestLocalFSRemoveAllRemovesPopulatedTree(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	nested := filepath.Join(sub, "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "child.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "grandchild.txt"), []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (LocalFS{}).RemoveAll(sub); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Fatalf("expected sub (and everything inside it) to be gone, stat err = %v", err)
+	}
+}
+
 func TestLocalFSRename(t *testing.T) {
 	dir := t.TempDir()
 	oldPath := filepath.Join(dir, "old.txt")
