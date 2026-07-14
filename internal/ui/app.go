@@ -499,6 +499,12 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if mode == "mkdir" {
 			return m, mkdirCmd(pane.FS, pane.Cwd, value, paneName)
 		}
+		if value == oldName {
+			// A no-op rename: renameCmd's destination-exists check would
+			// otherwise reject this, since Stat(newPath) finds the very
+			// file being "renamed" and reports it as a naming conflict.
+			return m, nil
+		}
 		return m, renameCmd(pane.FS, pane.Cwd, oldName, value, paneName)
 	}
 	cmd := m.promptPane.HandleKey(msg)

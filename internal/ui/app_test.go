@@ -522,6 +522,53 @@ func TestHandleBrowsingKeyRenameRefusesExistingTarget(t *testing.T) {
 	}
 }
 
+// TestHandleBrowsingKeyRenameNoOpDoesNotError guards against a rough edge
+// found in review: submitting the rename prompt without changing the name
+// would otherwise hit the same destination-exists check as a real collision
+// (Stat finds the file being "renamed" since it's the same path), showing a
+// confusing "already exists" error for what should be a harmless no-op.
+func TestHandleBrowsingKeyRenameNoOpDoesNotError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "same.txt"), []byte("unchanged"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = localDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	m.statusMsg = "Ready."
+
+	newModel, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = newModel.(*Model)
+
+	// Don't touch m.promptPane's value — submit exactly the pre-filled name.
+	newModel, cmd := m.handlePromptKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(*Model)
+
+	if m.screen != ScreenBrowsing {
+		t.Errorf("expected ScreenBrowsing after no-op rename Enter, got %v", m.screen)
+	}
+	if cmd != nil {
+		t.Error("expected no Cmd for a no-op rename (nothing to do, no I/O to perform)")
+	}
+	if m.statusMsg != "Ready." {
+		t.Errorf("expected no error status message for a no-op rename, got %q", m.statusMsg)
+	}
+	got, err := os.ReadFile(filepath.Join(localDir, "same.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "unchanged" {
+		t.Errorf("expected same.txt to be untouched, got %q", got)
+	}
+}
+
 // TestHandleBrowsingKeyMkdirFlow drives m -> type a name -> Enter, verifying
 // the directory is created on disk and the pane refreshed.
 func TestHandleBrowsingKeyMkdirFlow(t *testing.T) {
