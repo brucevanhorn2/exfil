@@ -37,6 +37,30 @@ func TestBrowserPaneBack(t *testing.T) {
 	}
 }
 
+// TestBrowserPaneClearSelected verifies that ClearSelected removes a mark
+// (used after a file's transfer succeeds), and is a no-op for a name that
+// was never marked.
+func TestBrowserPaneClearSelected(t *testing.T) {
+	b := NewBrowserPane("test", fsys.LocalFS{})
+	b.Selected["file.txt"] = true
+	b.Selected["other.txt"] = true
+
+	b.ClearSelected("file.txt")
+
+	if b.Selected["file.txt"] {
+		t.Error("expected file.txt to be cleared from selection")
+	}
+	if !b.Selected["other.txt"] {
+		t.Error("expected other.txt to remain selected")
+	}
+
+	// Clearing a name that was never selected must not panic or add an entry.
+	b.ClearSelected("never-marked.txt")
+	if b.Selected["never-marked.txt"] {
+		t.Error("expected never-marked.txt to remain unselected")
+	}
+}
+
 // TestBrowserPaneEnsureVisible is a regression test for an off-by-one where
 // ensureVisible()'s scroll math didn't match View()'s actual visible row
 // count, letting the cursor scroll one row past what was rendered.

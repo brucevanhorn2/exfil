@@ -78,14 +78,15 @@ type Model struct {
 	confirmDeleteTargets   []deleteTarget
 	confirmDeletePaneName  string
 	confirmDeleteRecursive bool
-	// transferDest maps an in-flight transfer's ID to which pane ("local" or
-	// "remote") it's copying into, so TransferDoneMsg knows which pane to
-	// refresh. Entries are removed once the transfer finishes or errors.
+	// transferDest maps an in-flight transfer's ID to which pane it's
+	// copying into/out of and which file, so TransferDoneMsg knows which
+	// pane to refresh and, on success, which pane/filename to clear from
+	// selection. Entries are removed once the transfer finishes or errors.
 	// Written from enqueueCopyDirection's tea.Cmd goroutine and read/deleted
 	// from Update()'s goroutine, so access must go through transferDestMu —
 	// a plain map write racing a map read/delete is a fatal Go runtime
 	// error, not just a benign data race.
-	transferDest   map[int]string
+	transferDest   map[int]transferInfo
 	transferDestMu sync.Mutex
 	eventsCh       chan tea.Msg
 	jobsCh         chan transfer.Job
@@ -187,7 +188,7 @@ func NewModel(eventsCh chan tea.Msg, jobsCh chan transfer.Job, logger *log.Logge
 		spinner:           sp,
 		statusMsg:         loc.T("status_ready"),
 		nextID:            1,
-		transferDest:      make(map[int]string),
+		transferDest:      make(map[int]transferInfo),
 		testMode:          testMode,
 	}
 
@@ -314,18 +315,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transfer.TransferDoneMsg:
 		// Transfer completed successfully.
 		m.queuePane.UpdateTransfer(msg.ID, StatusDone, 0, 0, "", "")
-		dstName, ok := m.popTransferDest(msg.ID)
+		info, ok := m.popTransferDest(msg.ID)
 		if !ok {
 			return m, waitForEvent(m.eventsCh)
 		}
-		dstPane := m.remotePane
-		if dstName == "local" {
-			dstPane = m.localPane
-		}
+		// Clear the file's mark in the pane it was copied from — this file
+		// succeeded, so it no longer needs to stay selected. Other marked
+		// files (still in flight or yet to complete) are untouched.
+		m.paneByName(info.srcPane).ClearSelected(info.filename)
+		dstPane := m.paneByName(info.destPane)
 		// Re-list whichever directory the destination pane currently shows,
 		// so the newly-arrived file appears without the user navigating
 		// away and back.
-		return m, tea.Batch(waitForEvent(m.eventsCh), readDirCmd(dstName, dstPane.FS, dstPane.Cwd))
+		return m, tea.Batch(waitForEvent(m.eventsCh), readDirCmd(info.destPane, dstPane.FS, dstPane.Cwd))
 
 	case transfer.TransferErrorMsg:
 		// Transfer failed. Mark it as error and keep the error message visible.
@@ -895,10 +897,8 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			return nil
 		}
 
-		dstName := "remote"
-		if dstPane == m.localPane {
-			dstName = "local"
-		}
+		dstName := m.paneName(dstPane)
+		srcName := m.paneName(srcPane)
 
 		for _, filename := range files {
 			entry := srcPane.EntryByName(filename)
@@ -909,7 +909,7 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 
 			id := m.nextID
 			m.nextID++
-			m.setTransferDest(id, dstName)
+			m.setTransferDest(id, dstName, srcName, filename)
 
 			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
 			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)
@@ -944,23 +944,32 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 	}
 }
 
+// transferInfo records a queued transfer's source and destination panes
+// (by "local"/"remote" name) and the filename involved, keyed by transfer
+// ID in Model.transferDest.
+type transferInfo struct {
+	destPane string
+	srcPane  string
+	filename string
+}
+
 // setTransferDest and popTransferDest guard m.transferDest with a mutex:
 // setTransferDest is called from enqueueCopyDirection's tea.Cmd goroutine,
 // popTransferDest from Update()'s goroutine, and a plain map has no built-in
 // protection against that — Go's runtime treats a concurrent map
 // write/read as a fatal, unrecoverable error rather than a benign race.
-func (m *Model) setTransferDest(id int, dstName string) {
+func (m *Model) setTransferDest(id int, destName, srcName, filename string) {
 	m.transferDestMu.Lock()
 	defer m.transferDestMu.Unlock()
-	m.transferDest[id] = dstName
+	m.transferDest[id] = transferInfo{destPane: destName, srcPane: srcName, filename: filename}
 }
 
-func (m *Model) popTransferDest(id int) (string, bool) {
+func (m *Model) popTransferDest(id int) (transferInfo, bool) {
 	m.transferDestMu.Lock()
 	defer m.transferDestMu.Unlock()
-	dstName, ok := m.transferDest[id]
+	info, ok := m.transferDest[id]
 	delete(m.transferDest, id)
-	return dstName, ok
+	return info, ok
 }
 
 // waitForEvent is the "subscription" pattern in bubbletea.
