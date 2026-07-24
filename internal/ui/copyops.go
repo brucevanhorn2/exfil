@@ -14,6 +14,7 @@ type transferQueuedMsg struct {
 	id       int
 	filename string
 	total    int64
+	group    *dirCopyGroup
 	srcPane  string
 	destPane string
 }
@@ -21,19 +22,36 @@ type transferQueuedMsg struct {
 // transferQueueErrorMsg reports a failure encountered while walking a
 // directory (MkdirAll or ReadDir) — surfaced via m.statusMsg since it
 // happens before any transfer.Job (and therefore any queue pane row) exists
-// for it to attach to.
+// for it to attach to. group (non-nil for a subtree failure inside a
+// recursive directory copy) lets Update() mark that directory's group as
+// failed, so its selection mark is left in place once the walk finishes.
 type transferQueueErrorMsg struct {
 	label string
 	err   error
+	group *dirCopyGroup
+}
+
+// dirWalkDoneMsg reports that the recursive walk for one top-level marked
+// directory (identified by group) has fully finished discovering and
+// enqueueing its files. Sent once, from enqueueCopyDirection's returned
+// Cmd, strictly after enqueueDirectoryCopy's top-level call returns — so it
+// always arrives after every transferQueuedMsg/transferQueueErrorMsg that
+// walk produced for the same group (same goroutine, same channel, FIFO).
+// discovered is the total file count that walk found (possibly 0, for an
+// empty directory or one that failed to walk at all).
+type dirWalkDoneMsg struct {
+	group      *dirCopyGroup
+	discovered int
 }
 
 // enqueueFileCopy allocates a transfer ID and hands the job to the worker
 // pool. Safe to call from any goroutine: it only sends on m.eventsCh/
 // m.jobsCh and calls the mutex-guarded allocateTransferID, never touching
-// m.queuePane/m.statusMsg/m.nextID directly.
-func (m *Model) enqueueFileCopy(srcFS, dstFS fsys.FileSystem, srcPath, dstPath, filename string, size int64, srcPane, destPane string) {
+// m.queuePane/m.statusMsg/m.nextID directly. group is nil for a flat
+// (non-directory) copy.
+func (m *Model) enqueueFileCopy(srcFS, dstFS fsys.FileSystem, srcPath, dstPath, filename string, size int64, group *dirCopyGroup, srcPane, destPane string) {
 	id := m.allocateTransferID()
-	m.eventsCh <- transferQueuedMsg{id: id, filename: filename, total: size, srcPane: srcPane, destPane: destPane}
+	m.eventsCh <- transferQueuedMsg{id: id, filename: filename, total: size, group: group, srcPane: srcPane, destPane: destPane}
 	m.jobsCh <- transfer.Job{
 		ID:         id,
 		SourcePath: srcPath,
@@ -69,15 +87,15 @@ func (m *Model) enqueueFileCopy(srcFS, dstFS fsys.FileSystem, srcPath, dstPath, 
 // shouldn't error) without hand-rolling that check against LocalFS/
 // RemoteFS's differently-shaped "already exists" errors — an accepted,
 // minor inefficiency for deep/wide trees rather than a correctness issue.
-func (m *Model) enqueueDirectoryCopy(srcFS, dstFS fsys.FileSystem, srcRoot, dstRoot, label, srcPane, destPane string) int {
+func (m *Model) enqueueDirectoryCopy(srcFS, dstFS fsys.FileSystem, srcRoot, dstRoot, label string, group *dirCopyGroup, srcPane, destPane string) int {
 	if err := dstFS.MkdirAll(dstRoot); err != nil {
-		m.eventsCh <- transferQueueErrorMsg{label: label, err: err}
+		m.eventsCh <- transferQueueErrorMsg{label: label, err: err, group: group}
 		return 0
 	}
 
 	entries, err := srcFS.ReadDir(srcRoot)
 	if err != nil {
-		m.eventsCh <- transferQueueErrorMsg{label: label, err: err}
+		m.eventsCh <- transferQueueErrorMsg{label: label, err: err, group: group}
 		return 0
 	}
 
@@ -87,10 +105,10 @@ func (m *Model) enqueueDirectoryCopy(srcFS, dstFS fsys.FileSystem, srcRoot, dstR
 		dstPath := dstFS.Join(dstRoot, e.Name)
 		childLabel := label + "/" + e.Name
 		if e.IsDir {
-			count += m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, childLabel, srcPane, destPane)
+			count += m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, childLabel, group, srcPane, destPane)
 			continue
 		}
-		m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, e.Name, e.Size, srcPane, destPane)
+		m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, e.Name, e.Size, group, srcPane, destPane)
 		count++
 	}
 	return count

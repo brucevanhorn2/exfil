@@ -97,9 +97,10 @@ type Model struct {
 	// removed on the assumption that today's call sites are permanent.
 	transferDest   map[int]transferInfo
 	transferDestMu sync.Mutex
-	eventsCh       chan tea.Msg
-	jobsCh         chan transfer.Job
-	logger         *log.Logger
+
+	eventsCh chan tea.Msg
+	jobsCh   chan transfer.Job
+	logger   *log.Logger
 
 	// SSH connection state. Held so we can close cleanly and so the remote
 	// pane's RemoteFS shares the single sftp client (safe for concurrent use).
@@ -330,8 +331,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Clear the file's mark in the pane it was copied from — this file
 		// succeeded, so it no longer needs to stay selected. Other marked
-		// files (still in flight or yet to complete) are untouched.
+		// files (still in flight or yet to complete) are untouched. If this
+		// file came from a recursive directory copy, also feed it into its
+		// directory's own group bookkeeping (completeGroupFile), which may
+		// in turn clear the MARKED DIRECTORY's own selection — see
+		// dirCopyGroup.
 		m.paneByName(info.srcPane).ClearSelected(info.filename)
+		completeGroupFile(info.group, false)
 		dstPane := m.paneByName(info.destPane)
 		// Re-list whichever directory the destination pane currently shows,
 		// so the newly-arrived file appears without the user navigating
@@ -341,7 +347,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case transfer.TransferErrorMsg:
 		// Transfer failed. Mark it as error and keep the error message visible.
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
-		m.popTransferDest(msg.ID)
+		info, _ := m.popTransferDest(msg.ID)
+		// Also marks this file's directory group (if any) as failed, so
+		// the marked directory's own mark won't clear — see
+		// completeGroupFile/dirCopyGroup.
+		completeGroupFile(info.group, true)
 		return m, waitForEvent(m.eventsCh)
 
 	case transferQueuedMsg:
@@ -349,7 +359,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// handed it to the worker pool off the UI thread; this is where
 		// that registration actually lands in the queue pane/transferDest,
 		// keeping all Model mutation inside Update() (see copyops.go).
-		m.setTransferDest(msg.id, msg.destPane, msg.srcPane, msg.filename)
+		m.setTransferDest(msg.id, msg.destPane, msg.srcPane, msg.filename, msg.group)
 		m.queuePane.AddTransfer(Transfer{
 			ID:       msg.id,
 			Filename: msg.filename,
@@ -365,6 +375,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// continue" decision for issue #6, the rest of the walk/copy
 		// isn't aborted; this is purely informational.
 		m.statusMsg = m.loc.T("status_copy_dir_error", msg.label, msg.err)
+		if msg.group != nil {
+			msg.group.failed = true
+			maybeFinalizeGroup(msg.group)
+		}
+		return m, waitForEvent(m.eventsCh)
+
+	case dirWalkDoneMsg:
+		// The walk for one top-level marked directory has fully finished
+		// discovering (and enqueueing) its files — see dirWalkDoneMsg's
+		// comment in copyops.go for the ordering guarantee this relies on.
+		msg.group.walkDone = true
+		msg.group.discovered = msg.discovered
+		maybeFinalizeGroup(msg.group)
 		return m, waitForEvent(m.eventsCh)
 
 	case fileOpDoneMsg:
@@ -940,10 +963,14 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 		return nil
 	}
 
+	srcName := m.paneName(srcPane)
+	dstName := m.paneName(dstPane)
+
 	type copyEntry struct {
 		name  string
 		isDir bool
 		size  int64
+		group *dirCopyGroup
 	}
 	entries := make([]copyEntry, len(files))
 	for i, filename := range files {
@@ -952,13 +979,16 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			ce.isDir = e.IsDir
 			ce.size = e.Size
 		}
+		if ce.isDir {
+			// Registered now, synchronously, rather than from the walk
+			// goroutine below — see newDirCopyGroup.
+			ce.group = newDirCopyGroup(srcPane, ce.name)
+		}
 		entries[i] = ce
 	}
 
 	srcFS, srcCwd := srcPane.FS, srcPane.Cwd
 	dstFS, dstCwd := dstPane.FS, dstPane.Cwd
-	dstName := m.paneName(dstPane)
-	srcName := m.paneName(srcPane)
 
 	return func() tea.Msg {
 		totalFiles := 0
@@ -967,10 +997,17 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 			dstPath := dstFS.Join(dstCwd, ce.name)
 
 			if ce.isDir {
-				totalFiles += m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, ce.name, srcName, dstName)
+				count := m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, ce.name, ce.group, srcName, dstName)
+				// Sent only after the recursive walk for this top-level
+				// directory has fully returned, so it always arrives after
+				// every transferQueuedMsg/transferQueueErrorMsg the walk
+				// produced for this group (same goroutine, same channel,
+				// FIFO order) — see maybeFinalizeGroup.
+				m.eventsCh <- dirWalkDoneMsg{group: ce.group, discovered: count}
+				totalFiles += count
 				continue
 			}
-			m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, ce.name, ce.size, srcName, dstName)
+			m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, ce.name, ce.size, nil, srcName, dstName)
 			totalFiles++
 		}
 
@@ -1000,11 +1037,13 @@ func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
 
 // transferInfo records a queued transfer's source and destination panes
 // (by "local"/"remote" name) and the filename involved, keyed by transfer
-// ID in Model.transferDest.
+// ID in Model.transferDest. group is non-nil when this file came from a
+// recursive directory copy — see dirCopyGroup.
 type transferInfo struct {
 	destPane string
 	srcPane  string
 	filename string
+	group    *dirCopyGroup
 }
 
 // setTransferDest and popTransferDest guard m.transferDest with a mutex.
@@ -1014,10 +1053,10 @@ type transferInfo struct {
 // read/delete is a fatal Go runtime error, not just a benign data race, so
 // it's cheap insurance against a future direct-mutation call site making
 // that mistake again.
-func (m *Model) setTransferDest(id int, destName, srcName, filename string) {
+func (m *Model) setTransferDest(id int, destName, srcName, filename string, group *dirCopyGroup) {
 	m.transferDestMu.Lock()
 	defer m.transferDestMu.Unlock()
-	m.transferDest[id] = transferInfo{destPane: destName, srcPane: srcName, filename: filename}
+	m.transferDest[id] = transferInfo{destPane: destName, srcPane: srcName, filename: filename, group: group}
 }
 
 func (m *Model) popTransferDest(id int) (transferInfo, bool) {
@@ -1036,6 +1075,97 @@ func (m *Model) allocateTransferID() int {
 	id := m.nextID
 	m.nextID++
 	return id
+}
+
+// dirCopyGroup tracks one marked directory's recursive-copy operation, so
+// its own selection mark (the directory itself, not any file inside it) can
+// be cleared once every file the walk discovered has finished — but only if
+// every one of them succeeded. A single failure anywhere in the subtree
+// leaves the mark in place, on the same logic as a single failed flat-file
+// copy: the transfer queue's error row already shows what failed, and the
+// directory mark being left on is the signal that this directory still
+// needs another push.
+//
+// discovered isn't known until the walk itself finishes (walkDone), since
+// enqueueDirectoryCopy discovers files lazily while recursing — completed
+// is compared against discovered only once walkDone is true, so a group
+// with zero files completed so far isn't mistaken for "already finished"
+// while its walk is still in progress.
+//
+// A *dirCopyGroup is created once (newDirCopyGroup) and then only ever
+// created, read, or mutated from Update()'s own goroutine — via
+// transferQueuedMsg/dirWalkDoneMsg/transferQueueErrorMsg (copyops.go's walk
+// goroutine only ever carries a *dirCopyGroup along on a message, never
+// touches its fields directly) and TransferDoneMsg/TransferErrorMsg (via
+// completeGroupFile). So, like transferDest's underlying values, no mutex
+// is needed. There's deliberately no map keyed by an allocated ID (unlike
+// Model.transferDest): nothing ever needs to look a group up "from
+// outside" — every read site already has the *dirCopyGroup in hand via the
+// message or transferInfo that's carrying it.
+type dirCopyGroup struct {
+	srcPane    *BrowserPane
+	dirName    string
+	walkDone   bool
+	discovered int
+	completed  int
+	failed     bool
+}
+
+// newDirCopyGroup registers a new directory-copy operation for dirName in
+// srcPane and returns it. Only ever called from enqueueCopyDirection's
+// synchronous guard/snapshot phase (Update()'s own goroutine, before the
+// walk's tea.Cmd is even returned) — see dirCopyGroup's comment for why
+// that makes a mutex unnecessary here, unlike allocateTransferID.
+//
+// Recorded on srcPane.activeCopyGroups[dirName], overwriting any earlier
+// group for the same name — see that field's comment on BrowserPane for
+// why: it lets maybeFinalizeGroup detect a stale, already-superseded group
+// (the user re-marked and re-pushed the same directory before an earlier
+// push of it finished) and skip clearing a mark that belongs to the newer
+// push instead.
+func newDirCopyGroup(srcPane *BrowserPane, dirName string) *dirCopyGroup {
+	g := &dirCopyGroup{srcPane: srcPane, dirName: dirName}
+	srcPane.activeCopyGroups[dirName] = g
+	return g
+}
+
+// completeGroupFile records one file's completion (success or failure)
+// against its directory-copy group, if it belongs to one (a nil group
+// means a flat, non-directory copy — a no-op here). Called from
+// TransferDoneMsg/TransferErrorMsg's handlers in Update().
+func completeGroupFile(g *dirCopyGroup, failed bool) {
+	if g == nil {
+		return
+	}
+	g.completed++
+	if failed {
+		g.failed = true
+	}
+	maybeFinalizeGroup(g)
+}
+
+// maybeFinalizeGroup clears g's directory mark once its walk has finished
+// discovering files AND every discovered file has completed — but only
+// clears the mark if none of them failed. Safe to call redundantly (e.g.
+// once from a file completion and once from dirWalkDoneMsg): the
+// activeCopyGroups check below means only the call that actually observes
+// both conditions true, for the still-current group, does anything.
+//
+// If g is no longer srcPane.activeCopyGroups[dirName] (a newer push of the
+// same name has since replaced it — see newDirCopyGroup), this is a stale
+// finish and must NOT touch the current mark, which belongs to that newer
+// group.
+func maybeFinalizeGroup(g *dirCopyGroup) {
+	if !g.walkDone || g.completed < g.discovered {
+		return
+	}
+	if g.srcPane.activeCopyGroups[g.dirName] != g {
+		return
+	}
+	delete(g.srcPane.activeCopyGroups, g.dirName)
+	if !g.failed {
+		g.srcPane.ClearSelected(g.dirName)
+	}
 }
 
 // waitForEvent is the "subscription" pattern in bubbletea.
