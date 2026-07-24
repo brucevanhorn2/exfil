@@ -200,6 +200,18 @@ func TestTransferDoneMsgRefreshesDestinationPane(t *testing.T) {
 	}
 	cmd()
 
+	// enqueueFileCopy sent a transferQueuedMsg to register the transfer in
+	// the queue pane/transferDest before handing the job to the worker
+	// pool — drain and process it the same way Update()'s real
+	// waitForEvent subscription loop would, or the "unblock" send below
+	// would deadlock on eventsCh's buffer already being full.
+	select {
+	case qmsg := <-m.eventsCh:
+		m.Update(qmsg)
+	default:
+		t.Fatal("expected a transferQueuedMsg on eventsCh")
+	}
+
 	var job transfer.Job
 	select {
 	case job = <-m.jobsCh:
@@ -271,7 +283,11 @@ func TestTransferDoneMsgClearsSourceSelection(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
 
-	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 2), testLogger(), true)
+	// eventsCh needs room for both files' transferQueuedMsg (sent
+	// synchronously, back to back, by cmd() below) plus the "unblock" send
+	// further down — a buffer of 1 would deadlock on the second
+	// transferQueuedMsg send since nothing is draining concurrently here.
+	m := NewModel(make(chan tea.Msg, 4), make(chan transfer.Job, 2), testLogger(), true)
 	m.localPane.FS = fsys.LocalFS{}
 	m.localPane.Cwd = srcDir
 	m.remotePane.FS = fsys.LocalFS{}
@@ -299,6 +315,13 @@ func TestTransferDoneMsgClearsSourceSelection(t *testing.T) {
 		t.Fatal("expected a Cmd from enqueueCopyDirection")
 	}
 	cmd()
+
+	// Drain both transferQueuedMsg (one per file) through Update() so
+	// transferDest is actually populated — TransferDoneMsg's handler below
+	// looks up srcPane/filename there to decide what to clear.
+	if n := drainEvents(m); n != 2 {
+		t.Fatalf("expected 2 transferQueuedMsg (file.txt, other.txt), got %d", n)
+	}
 
 	var jobs []transfer.Job
 	for i := 0; i < 2; i++ {
@@ -406,11 +429,13 @@ func TestEnqueueCopyDirectionBlocksDisconnectedRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The not-connected guard now runs synchronously (part of fixing the
+	// enqueueCopyDirection goroutine-mutation race), so it returns no Cmd
+	// at all rather than a Cmd whose invocation sets the status message.
 	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
-	if cmd == nil {
-		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	if cmd != nil {
+		t.Error("expected no Cmd while disconnected")
 	}
-	cmd()
 
 	select {
 	case job := <-m.jobsCh:
@@ -909,5 +934,311 @@ func TestHandleBrowsingKeyFileOpsBlockDisconnectedRemote(t *testing.T) {
 		if cmd != nil {
 			t.Errorf("key %q: expected no Cmd while disconnected", key)
 		}
+	}
+}
+
+// drainEvents processes every message currently buffered on m.eventsCh
+// through m.Update(), the same way Update()'s real waitForEvent
+// subscription loop would one at a time — used by tests that enqueue a
+// recursive copy, since transferQueuedMsg/transferQueueErrorMsg only take
+// effect once Update() has handled them (all Model mutation happens there,
+// never in the walker goroutine itself).
+func drainEvents(m *Model) int {
+	n := 0
+	for len(m.eventsCh) > 0 {
+		m.Update(<-m.eventsCh)
+		n++
+	}
+	return n
+}
+
+// TestEnqueueCopyDirectionRecursiveCopy drives a directory copy (issue #6):
+// marking a non-empty directory and pushing it across should mirror its
+// structure on the destination (via MkdirAll, verified directly on disk)
+// and enqueue one job per file with paths that preserve that structure.
+func TestEnqueueCopyDirectionRecursiveCopy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	sub := filepath.Join(srcDir, "sub")
+	nested := filepath.Join(sub, "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "file1.txt"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "file2.txt"), []byte("b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// "sub" is the only entry; mark it (cursor starts there).
+	m.localPane.ToggleSelect()
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	finalMsg := cmd()
+
+	// MkdirAll runs synchronously during the walk, independent of the
+	// worker pool that actually copies file bytes, so the mirrored
+	// structure should already exist on disk.
+	if info, err := os.Stat(filepath.Join(dstDir, "sub")); err != nil || !info.IsDir() {
+		t.Fatalf("expected dstDir/sub to exist as a directory, err=%v", err)
+	}
+	if info, err := os.Stat(filepath.Join(dstDir, "sub", "nested")); err != nil || !info.IsDir() {
+		t.Fatalf("expected dstDir/sub/nested to exist as a directory, err=%v", err)
+	}
+
+	// Since files were enqueued (totalFiles > 0), the Cmd deliberately does
+	// NOT also refresh the destination pane itself — the usual per-file
+	// TransferDoneMsg refresh already covers that, and having both would be
+	// two independent, unordered refreshes racing each other. See
+	// TestEnqueueCopyDirectionEmptyDirectoryTriggersRefresh for the case
+	// where nothing else will ever trigger that refresh.
+	if finalMsg != nil {
+		t.Errorf("expected no extra refresh message when files were enqueued, got %#v", finalMsg)
+	}
+
+	queuedCount := drainEvents(m)
+	if queuedCount != 2 {
+		t.Fatalf("expected 2 transferQueuedMsg (file1.txt, nested/file2.txt), got %d", queuedCount)
+	}
+	if len(m.queuePane.Transfers) != 2 {
+		t.Errorf("expected 2 queue pane entries, got %d", len(m.queuePane.Transfers))
+	}
+
+	gotPaths := map[string]string{}
+	for len(m.jobsCh) > 0 {
+		job := <-m.jobsCh
+		gotPaths[job.SourcePath] = job.DestPath
+	}
+
+	wantSrc1 := filepath.Join(sub, "file1.txt")
+	wantDst1 := filepath.Join(dstDir, "sub", "file1.txt")
+	wantSrc2 := filepath.Join(nested, "file2.txt")
+	wantDst2 := filepath.Join(dstDir, "sub", "nested", "file2.txt")
+	if gotPaths[wantSrc1] != wantDst1 {
+		t.Errorf("expected job %s -> %s, got -> %q", wantSrc1, wantDst1, gotPaths[wantSrc1])
+	}
+	if gotPaths[wantSrc2] != wantDst2 {
+		t.Errorf("expected job %s -> %s, got -> %q", wantSrc2, wantDst2, gotPaths[wantSrc2])
+	}
+}
+
+// TestEnqueueCopyDirectionEmptyDirectoryTriggersRefresh covers the case
+// enqueueCopyDirection's eager end-of-walk refresh actually exists for:
+// copying an entirely empty directory enqueues zero files, so nothing would
+// ever trigger the usual per-file TransferDoneMsg refresh — the Cmd must
+// refresh the destination pane itself instead.
+func TestEnqueueCopyDirectionEmptyDirectoryTriggersRefresh(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	if err := os.Mkdir(filepath.Join(srcDir, "emptydir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.localPane.ToggleSelect()
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	finalMsg := cmd()
+
+	if finalMsg == nil {
+		t.Fatal("expected the eager refresh message since no files were enqueued")
+	}
+	m.Update(finalMsg)
+
+	found := false
+	for _, e := range m.remotePane.Entries {
+		if e.Name == "emptydir" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected destination pane to show 'emptydir' after the walk, got %v", m.remotePane.Entries)
+	}
+	if len(m.queuePane.Transfers) != 0 {
+		t.Errorf("expected no queued transfers for an empty directory, got %v", m.queuePane.Transfers)
+	}
+}
+
+// TestEnqueueCopyDirectionMixedSelectionCopy marks one plain file and one
+// non-empty directory together (issue #6's "mixed selection" decision): a
+// single push should enqueue jobs for both.
+func TestEnqueueCopyDirectionMixedSelectionCopy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	sub := filepath.Join(srcDir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "child.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "plain.txt"), []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark both entries (dirs sort first: "sub" is entry 0, "plain.txt" 1).
+	m.localPane.ToggleSelect()
+	m.localPane.Down()
+	m.localPane.ToggleSelect()
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	cmd()
+	drainEvents(m)
+
+	gotFiles := map[string]bool{}
+	for len(m.jobsCh) > 0 {
+		job := <-m.jobsCh
+		gotFiles[job.Filename] = true
+	}
+	if !gotFiles["child.txt"] {
+		t.Error("expected a job for sub/child.txt")
+	}
+	if !gotFiles["plain.txt"] {
+		t.Error("expected a job for plain.txt")
+	}
+}
+
+// TestEnqueueCopyDirectionSkipsUnreadableSubtreeContinues guards the "skip
+// and continue" decision for issue #6: a ReadDir failure on one marked
+// directory shouldn't abort copying other marked entries.
+func TestEnqueueCopyDirectionSkipsUnreadableSubtreeContinues(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission checks don't apply")
+	}
+
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	baddir := filepath.Join(srcDir, "baddir")
+	if err := os.Mkdir(baddir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baddir, "child.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(baddir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore permissions so t.TempDir()'s cleanup can remove baddir.
+	defer func() {
+		if err := os.Chmod(baddir, 0755); err != nil {
+			t.Logf("failed to restore baddir permissions: %v", err)
+		}
+	}()
+
+	if err := os.WriteFile(filepath.Join(srcDir, "goodfile.txt"), []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark both entries ("baddir" sorts before "goodfile.txt").
+	m.localPane.ToggleSelect()
+	m.localPane.Down()
+	m.localPane.ToggleSelect()
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	cmd()
+	drainEvents(m)
+
+	if m.statusMsg == "" || m.statusMsg == "Ready." {
+		t.Error("expected an error status message for the unreadable subtree")
+	}
+
+	gotFiles := map[string]bool{}
+	for len(m.jobsCh) > 0 {
+		job := <-m.jobsCh
+		gotFiles[job.Filename] = true
+	}
+	if !gotFiles["goodfile.txt"] {
+		t.Error("expected goodfile.txt to still be enqueued despite baddir's failure")
+	}
+}
+
+// TestAllocateTransferIDConcurrentAccess is a regression test for a data
+// race: enqueueFileCopy calls allocateTransferID from the directory-walk
+// goroutine, concurrently with any other goroutine doing the same (e.g. two
+// copy keypresses in a row). Run with -race to verify the mutex actually
+// guards m.nextID, and that every allocated ID is unique.
+func TestAllocateTransferIDConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), false)
+
+	const n = 200
+	ids := make([]int, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			ids[i] = m.allocateTransferID()
+		}()
+	}
+	wg.Wait()
+
+	seen := make(map[int]bool, n)
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("allocateTransferID returned duplicate ID %d", id)
+		}
+		seen[id] = true
 	}
 }

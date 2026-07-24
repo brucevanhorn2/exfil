@@ -32,7 +32,7 @@ Dual-pane local **and remote (SFTP)** file browsing, with a live transfer queue,
 - ✅ Selectable lingo packs (plain/secretsquirrel/keyboardcowboy/corposlut) and free-form hex theme colors via the Settings screen (`S`)
 - ✅ Gradient/neon chrome: pane borders, titles, and the transfer progress bar all render as a color gradient between your chosen primary/secondary theme colors, instead of a flat color
 - ✅ File operations, on both local and remote panes: delete (`d`, single file or all marked, Y/N confirm — recurses with a stronger warning if a marked directory isn't empty), rename (`r`), mkdir (`m`)
-- ⏳ Directory copy support
+- ✅ Directory copy: marking a directory and pushing it across (same `→`/`←`/`c` keys as file copy) mirrors its structure on the destination and copies every file inside, preserving the directory tree; mixing marked files and directories in one push works too
 - ⏳ Multi-host sessions (currently one SSH connection at a time)
 
 ## Building
@@ -103,6 +103,7 @@ type FileSystem interface {
     RemoveAll(path string) error
     Rename(oldPath, newPath string) error
     Mkdir(path string) error
+    MkdirAll(path string) error
 }
 ```
 
@@ -134,12 +135,11 @@ echo "test content" > /tmp/exfil-test/a/file1.txt
 
 ## Known limitations
 
-- Directories cannot be copied (shows "not supported" message)
 - Single SSH connection per session (no switching between hosts mid-run)
 - No view/edit operations
-- Recursive delete over SFTP has no progress reporting and can't be cancelled mid-delete
+- Recursive delete/copy over SFTP have no progress reporting for the walk itself and can't be cancelled mid-operation
 - No 1Password integration
-- No recursive directory sync (bidirectional sync between directories, not to be confused with recursive delete above)
+- No recursive directory sync (bidirectional sync between directories, not to be confused with recursive delete/copy above)
 
 ## Logs
 

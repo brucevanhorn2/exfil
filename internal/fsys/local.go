@@ -68,6 +68,10 @@ func (lfs LocalFS) Mkdir(path string) error {
 	return os.Mkdir(path, 0755)
 }
 
+func (lfs LocalFS) MkdirAll(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
 func (lfs LocalFS) Stat(path string) (*Entry, error) {
 	info, err := os.Stat(path)
 	if err != nil {

@@ -66,7 +66,13 @@ type Model struct {
 	promptPane        *PromptPane
 	confirmPane       *ConfirmPane
 	statusMsg         string
-	nextID            int
+	// nextID is allocated via allocateTransferID() rather than incremented
+	// directly, guarded by nextIDMu — recursive directory copy enqueues
+	// files from a background walker goroutine (internal/ui/copyops.go),
+	// concurrently with Update()'s own goroutine, so a plain int++ would be
+	// a data race.
+	nextID   int
+	nextIDMu sync.Mutex
 
 	// promptMode/promptPaneName/promptOldName carry context for ScreenPrompt
 	// between the browsing-screen key that opened it (r/m) and Enter's
@@ -82,10 +88,13 @@ type Model struct {
 	// copying into/out of and which file, so TransferDoneMsg knows which
 	// pane to refresh and, on success, which pane/filename to clear from
 	// selection. Entries are removed once the transfer finishes or errors.
-	// Written from enqueueCopyDirection's tea.Cmd goroutine and read/deleted
-	// from Update()'s goroutine, so access must go through transferDestMu —
-	// a plain map write racing a map read/delete is a fatal Go runtime
-	// error, not just a benign data race.
+	// setTransferDest/popTransferDest are both only ever called from
+	// Update()'s own goroutine today (via the transferQueuedMsg/
+	// TransferDoneMsg/TransferErrorMsg cases), so transferDestMu is no
+	// longer strictly required by a live cross-goroutine caller — kept as
+	// cheap defense-in-depth against a future direct-mutation call site
+	// (the same mistake the pre-#6 enqueueCopyDirection made) rather than
+	// removed on the assumption that today's call sites are permanent.
 	transferDest   map[int]transferInfo
 	transferDestMu sync.Mutex
 	eventsCh       chan tea.Msg
@@ -333,6 +342,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transfer failed. Mark it as error and keep the error message visible.
 		m.queuePane.UpdateTransfer(msg.ID, StatusError, 0, 0, "", msg.Err.Error())
 		m.popTransferDest(msg.ID)
+		return m, waitForEvent(m.eventsCh)
+
+	case transferQueuedMsg:
+		// A recursive (or flat multi-select) copy discovered a file and
+		// handed it to the worker pool off the UI thread; this is where
+		// that registration actually lands in the queue pane/transferDest,
+		// keeping all Model mutation inside Update() (see copyops.go).
+		m.setTransferDest(msg.id, msg.destPane, msg.srcPane, msg.filename)
+		m.queuePane.AddTransfer(Transfer{
+			ID:       msg.id,
+			Filename: msg.filename,
+			Status:   StatusQueued,
+			Total:    msg.total,
+		})
+		return m, waitForEvent(m.eventsCh)
+
+	case transferQueueErrorMsg:
+		// A directory's MkdirAll/ReadDir failed while walking — reported
+		// via statusMsg since it happened before any transfer.Job (and
+		// queue pane row) existed for it to attach to. Per the "skip and
+		// continue" decision for issue #6, the rest of the walk/copy
+		// isn't aborted; this is purely informational.
+		m.statusMsg = m.loc.T("status_copy_dir_error", msg.label, msg.err)
 		return m, waitForEvent(m.eventsCh)
 
 	case fileOpDoneMsg:
@@ -878,69 +910,91 @@ func (m *Model) enqueueCopy() tea.Cmd {
 // enqueueCopyDirection copies from srcPane to dstPane regardless of focus.
 // Used by the Left/Right arrow shortcuts, which point in the direction the
 // file travels: Right pushes local → remote, Left pulls remote → local.
+//
+// The guard checks and the marked-entry snapshot below run synchronously —
+// as part of handling the keypress on Update()'s own goroutine, before the
+// tea.Cmd is even constructed, not inside it. BrowserPane's Cwd/Entries/FS
+// fields have no synchronization (Enter()/Back() mutate them directly from
+// Update()), and the returned Cmd's walk can now take long enough (real
+// directory I/O, possibly over SFTP) that reading those fields
+// progressively during the walk — as the pre-#6 code did, back when the
+// whole operation was one near-instant loop — would race against the user
+// navigating either pane mid-walk. Snapshotting here means the returned
+// Cmd only ever touches local values, m.eventsCh/m.jobsCh, and the
+// mutex-guarded allocateTransferID, matching the same discipline
+// enqueueFileCopy/enqueueDirectoryCopy (copyops.go) already follow.
 func (m *Model) enqueueCopyDirection(srcPane, dstPane *BrowserPane) tea.Cmd {
+	if (srcPane == m.remotePane || dstPane == m.remotePane) && !m.connected && !m.testMode {
+		m.statusMsg = m.loc.T("status_not_connected")
+		return nil
+	}
+
+	files := srcPane.GetSelectedFiles()
+	if len(files) == 0 {
+		if entry := srcPane.CurrentFile(); entry != nil {
+			files = []string{entry.Name}
+		}
+	}
+	if len(files) == 0 {
+		m.statusMsg = m.loc.T("status_no_files_selected")
+		return nil
+	}
+
+	type copyEntry struct {
+		name  string
+		isDir bool
+		size  int64
+	}
+	entries := make([]copyEntry, len(files))
+	for i, filename := range files {
+		ce := copyEntry{name: filename}
+		if e := srcPane.EntryByName(filename); e != nil {
+			ce.isDir = e.IsDir
+			ce.size = e.Size
+		}
+		entries[i] = ce
+	}
+
+	srcFS, srcCwd := srcPane.FS, srcPane.Cwd
+	dstFS, dstCwd := dstPane.FS, dstPane.Cwd
+	dstName := m.paneName(dstPane)
+	srcName := m.paneName(srcPane)
+
 	return func() tea.Msg {
-		if (srcPane == m.remotePane || dstPane == m.remotePane) && !m.connected && !m.testMode {
-			m.statusMsg = m.loc.T("status_not_connected")
-			return nil
-		}
+		totalFiles := 0
+		for _, ce := range entries {
+			srcPath := srcFS.Join(srcCwd, ce.name)
+			dstPath := dstFS.Join(dstCwd, ce.name)
 
-		files := srcPane.GetSelectedFiles()
-		if len(files) == 0 {
-			if entry := srcPane.CurrentFile(); entry != nil {
-				files = []string{entry.Name}
-			}
-		}
-
-		if len(files) == 0 {
-			m.statusMsg = m.loc.T("status_no_files_selected")
-			return nil
-		}
-
-		dstName := m.paneName(dstPane)
-		srcName := m.paneName(srcPane)
-
-		for _, filename := range files {
-			entry := srcPane.EntryByName(filename)
-			if entry != nil && entry.IsDir {
-				m.statusMsg = m.loc.T("status_dir_not_supported")
+			if ce.isDir {
+				totalFiles += m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, ce.name, srcName, dstName)
 				continue
 			}
-
-			id := m.nextID
-			m.nextID++
-			m.setTransferDest(id, dstName, srcName, filename)
-
-			srcPath := srcPane.FS.Join(srcPane.Cwd, filename)
-			dstPath := dstPane.FS.Join(dstPane.Cwd, filename)
-
-			var size int64
-			if entry != nil {
-				size = entry.Size
-			}
-
-			m.queuePane.AddTransfer(Transfer{
-				ID:       id,
-				Filename: filename,
-				Status:   StatusQueued,
-				Total:    size,
-			})
-
-			job := transfer.Job{
-				ID:         id,
-				SourcePath: srcPath,
-				DestPath:   dstPath,
-				Filename:   filename,
-				// Carry each side's filesystem so the worker knows whether this
-				// is a local copy, a download (remote→local), or an upload.
-				SrcFS: srcPane.FS,
-				DstFS: dstPane.FS,
-			}
-
-			m.jobsCh <- job
+			m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, ce.name, ce.size, srcName, dstName)
+			totalFiles++
 		}
 
-		return nil
+		if totalFiles > 0 {
+			// The usual per-file TransferDoneMsg refresh (unchanged, see
+			// that case above) will show the destination pane's current
+			// state once any file completes — including any empty sibling
+			// directories already created by MkdirAll above. Deliberately
+			// NOT also refreshing here: this Cmd and each worker's
+			// TransferDoneMsg-triggered readDirCmd would otherwise be two
+			// independent, unordered refreshes of the same pane, and a
+			// slower one arriving after a faster one would silently
+			// overwrite a fresher listing with stale data.
+			return nil
+		}
+
+		// Nothing was enqueued (e.g. every marked entry was an empty
+		// directory, or every directory failed to walk) — nothing will
+		// ever trigger the per-file refresh above, so do it explicitly. A
+		// direct synchronous call, not a returned tea.Cmd for bubbletea to
+		// schedule separately: it must run strictly after the walk above,
+		// in the same goroutine — and since totalFiles == 0 here, there's
+		// no competing TransferDoneMsg-triggered refresh for it to race.
+		return readDirCmd(dstName, dstFS, dstCwd)()
 	}
 }
 
@@ -953,11 +1007,13 @@ type transferInfo struct {
 	filename string
 }
 
-// setTransferDest and popTransferDest guard m.transferDest with a mutex:
-// setTransferDest is called from enqueueCopyDirection's tea.Cmd goroutine,
-// popTransferDest from Update()'s goroutine, and a plain map has no built-in
-// protection against that — Go's runtime treats a concurrent map
-// write/read as a fatal, unrecoverable error rather than a benign race.
+// setTransferDest and popTransferDest guard m.transferDest with a mutex.
+// Both are only ever called from Update()'s own goroutine today (see
+// transferDestMu's comment on Model), so the mutex is defense-in-depth
+// rather than a live requirement — a plain map write racing a map
+// read/delete is a fatal Go runtime error, not just a benign data race, so
+// it's cheap insurance against a future direct-mutation call site making
+// that mistake again.
 func (m *Model) setTransferDest(id int, destName, srcName, filename string) {
 	m.transferDestMu.Lock()
 	defer m.transferDestMu.Unlock()
@@ -970,6 +1026,16 @@ func (m *Model) popTransferDest(id int) (transferInfo, bool) {
 	info, ok := m.transferDest[id]
 	delete(m.transferDest, id)
 	return info, ok
+}
+
+// allocateTransferID hands out a unique transfer ID, guarded by nextIDMu.
+// Safe to call from any goroutine — see nextIDMu's comment on Model.
+func (m *Model) allocateTransferID() int {
+	m.nextIDMu.Lock()
+	defer m.nextIDMu.Unlock()
+	id := m.nextID
+	m.nextID++
+	return id
 }
 
 // waitForEvent is the "subscription" pattern in bubbletea.
