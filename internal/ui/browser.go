@@ -24,14 +24,27 @@ type BrowserPane struct {
 	// the remote pane before an SSH connection is made, so it never looks
 	// like it's browsing a real filesystem when it isn't.
 	EmptyMessage string
+
+	// activeCopyGroups tracks the most recently started recursive-copy
+	// group for each marked directory name in this pane, keyed by that
+	// name. It exists so a stale, already-finished group can't clear a
+	// mark that belongs to a NEWER push of the same name — e.g. the user
+	// re-marks and re-pushes "sub" (after Refresh wiped Selected, or just
+	// by toggling it again) while an earlier push of "sub" is still
+	// copying. Each newDirCopyGroup call overwrites the entry for that
+	// name; maybeFinalizeGroup (app.go) only clears the mark if its group
+	// is still the one on file here, so a finishing-late older group is a
+	// no-op instead of erasing the newer push's mark. See dirCopyGroup.
+	activeCopyGroups map[string]*dirCopyGroup
 }
 
 func NewBrowserPane(title string, fs fsys.FileSystem) *BrowserPane {
 	return &BrowserPane{
-		Title:    title,
-		FS:       fs,
-		Cwd:      "/",
-		Selected: make(map[string]bool),
+		Title:            title,
+		FS:               fs,
+		Cwd:              "/",
+		Selected:         make(map[string]bool),
+		activeCopyGroups: make(map[string]*dirCopyGroup),
 	}
 }
 

@@ -501,7 +501,7 @@ func TestTransferDestConcurrentAccess(t *testing.T) {
 		id := i
 		go func() {
 			defer wg.Done()
-			m.setTransferDest(id, "remote", "local", "file.txt")
+			m.setTransferDest(id, "remote", "local", "file.txt", nil)
 		}()
 		go func() {
 			defer wg.Done()
@@ -1013,12 +1013,21 @@ func TestEnqueueCopyDirectionRecursiveCopy(t *testing.T) {
 		t.Errorf("expected no extra refresh message when files were enqueued, got %#v", finalMsg)
 	}
 
-	queuedCount := drainEvents(m)
-	if queuedCount != 2 {
-		t.Fatalf("expected 2 transferQueuedMsg (file1.txt, nested/file2.txt), got %d", queuedCount)
+	// 2 transferQueuedMsg (file1.txt, nested/file2.txt) plus 1 dirWalkDoneMsg
+	// for the "sub" group, sent once its walk fully returns.
+	eventCount := drainEvents(m)
+	if eventCount != 3 {
+		t.Fatalf("expected 2 transferQueuedMsg + 1 dirWalkDoneMsg, got %d events", eventCount)
 	}
 	if len(m.queuePane.Transfers) != 2 {
 		t.Errorf("expected 2 queue pane entries, got %d", len(m.queuePane.Transfers))
+	}
+
+	// The walk has finished (dirWalkDoneMsg processed) but neither file has
+	// completed yet, so "sub"'s mark must still be in place — see
+	// TestRecursiveCopyClearsDirectoryMarkOnAllSuccess for the completed case.
+	if !m.localPane.Selected["sub"] {
+		t.Error("expected \"sub\" to remain marked before any of its files complete")
 	}
 
 	gotPaths := map[string]string{}
@@ -1240,5 +1249,321 @@ func TestAllocateTransferIDConcurrentAccess(t *testing.T) {
 			t.Fatalf("allocateTransferID returned duplicate ID %d", id)
 		}
 		seen[id] = true
+	}
+}
+
+// TestRecursiveCopyClearsDirectoryMarkOnAllSuccess verifies the fix for
+// issue #21: a marked directory's own checkmark should clear once every
+// file inside it has finished successfully. Before this fix, only leaf
+// filenames were ever passed to ClearSelected, so a marked directory's own
+// entry (e.g. "sub") was never cleared — it stayed marked forever.
+func TestRecursiveCopyClearsDirectoryMarkOnAllSuccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	sub := filepath.Join(srcDir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.txt"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "b.txt"), []byte("b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.localPane.ToggleSelect() // marks "sub"
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+	drainEvents(m)
+
+	if !m.localPane.Selected["sub"] {
+		t.Fatal("expected \"sub\" to still be marked before any file completes")
+	}
+
+	var jobs []transfer.Job
+	for len(m.jobsCh) > 0 {
+		jobs = append(jobs, <-m.jobsCh)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(jobs))
+	}
+
+	m.Update(transfer.TransferDoneMsg{ID: jobs[0].ID})
+	if !m.localPane.Selected["sub"] {
+		t.Error("expected \"sub\" to remain marked while one file is still in flight")
+	}
+
+	m.Update(transfer.TransferDoneMsg{ID: jobs[1].ID})
+	if m.localPane.Selected["sub"] {
+		t.Error("expected \"sub\"'s mark to clear once every file inside it succeeded")
+	}
+	if len(m.localPane.activeCopyGroups) != 0 {
+		t.Errorf("expected the finished group to be removed from activeCopyGroups, got %v", m.localPane.activeCopyGroups)
+	}
+}
+
+// TestRecursiveCopyLeavesDirectoryMarkOnAnyFailure verifies the other half
+// of issue #21's fix: if any file inside a marked directory fails, the
+// directory's mark must NOT clear even after every file has finished
+// (successfully or not) — a lingering mark is the signal that directory
+// still needs another push, same as the per-file behavior it mirrors.
+func TestRecursiveCopyLeavesDirectoryMarkOnAnyFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	sub := filepath.Join(srcDir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.txt"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "b.txt"), []byte("b"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.localPane.ToggleSelect() // marks "sub"
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+	drainEvents(m)
+
+	var jobs []transfer.Job
+	for len(m.jobsCh) > 0 {
+		jobs = append(jobs, <-m.jobsCh)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(jobs))
+	}
+
+	m.Update(transfer.TransferDoneMsg{ID: jobs[0].ID})
+	m.Update(transfer.TransferErrorMsg{ID: jobs[1].ID, Err: errTestTransferFailed})
+
+	if !m.localPane.Selected["sub"] {
+		t.Error("expected \"sub\" to remain marked since one of its files failed")
+	}
+	if len(m.localPane.activeCopyGroups) != 0 {
+		t.Errorf("expected the finished (failed) group to still be removed from activeCopyGroups, got %v", m.localPane.activeCopyGroups)
+	}
+}
+
+// TestRecursiveCopyEmptyDirectoryClearsMarkImmediately verifies that an
+// empty marked directory's mark clears as soon as its (trivially empty)
+// walk finishes — there are no files to wait for, so "every file succeeded"
+// is vacuously true.
+func TestRecursiveCopyEmptyDirectoryClearsMarkImmediately(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	if err := os.Mkdir(filepath.Join(srcDir, "emptydir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.localPane.ToggleSelect() // marks "emptydir"
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	finalMsg := cmd()
+	drainEvents(m)
+
+	if m.localPane.Selected["emptydir"] {
+		t.Error("expected \"emptydir\"'s mark to clear immediately since it had no files to wait for")
+	}
+	if len(m.localPane.activeCopyGroups) != 0 {
+		t.Errorf("expected the group to be removed from activeCopyGroups, got %v", m.localPane.activeCopyGroups)
+	}
+
+	// Unrelated to the mark-clearing fix, but this Cmd's eager
+	// destination-pane refresh (see enqueueCopyDirection) still applies for
+	// an all-empty-directory push.
+	if finalMsg == nil {
+		t.Fatal("expected the eager refresh message since no files were enqueued")
+	}
+}
+
+// TestRecursiveCopyUnwalkableDirectoryLeavesMarkOnFailedGroup verifies that
+// a directory whose ROOT fails to walk (MkdirAll/ReadDir error, not just a
+// nested subtree) still leaves the directory's mark in place: it counts as
+// the whole group having failed, per the "only clear on all-success"
+// decision, the same as a nested subtree failure would.
+func TestRecursiveCopyUnwalkableDirectoryLeavesMarkOnFailedGroup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission checks don't apply")
+	}
+
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	baddir := filepath.Join(srcDir, "baddir")
+	if err := os.Mkdir(baddir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(baddir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chmod(baddir, 0755); err != nil {
+			t.Logf("failed to restore baddir permissions: %v", err)
+		}
+	}()
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.localPane.ToggleSelect() // marks "baddir"
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+	drainEvents(m)
+
+	if !m.localPane.Selected["baddir"] {
+		t.Error("expected \"baddir\" to remain marked since its root failed to walk")
+	}
+	if len(m.localPane.activeCopyGroups) != 0 {
+		t.Errorf("expected the (failed) group to still be removed from activeCopyGroups, got %v", m.localPane.activeCopyGroups)
+	}
+}
+
+// TestRecursiveCopyStaleGroupDoesNotClearNewerMark is a regression test for
+// a race identified during review of the issue #21 fix: the user marks and
+// pushes a directory, then — before that push finishes — navigates away and
+// back (which wipes BrowserPane.Selected via Refresh/SetEntries) and marks
+// and pushes the SAME directory name again. The first push's group must not
+// clear the second push's fresh mark once it (belatedly) finishes; only the
+// second, still-current group may do that.
+func TestRecursiveCopyStaleGroupDoesNotClearNewerMark(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	sub := filepath.Join(srcDir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "a.txt"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(make(chan tea.Msg, 64), make(chan transfer.Job, 64), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// First push: mark "sub" and send it. Its file is enqueued but not yet
+	// completed — group1 stays in flight.
+	m.localPane.ToggleSelect()
+	cmd1 := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd1 == nil {
+		t.Fatal("expected a Cmd from the first enqueueCopyDirection")
+	}
+	cmd1()
+	drainEvents(m)
+
+	var job1 transfer.Job
+	select {
+	case job1 = <-m.jobsCh:
+	default:
+		t.Fatal("expected a job from the first push")
+	}
+
+	// Simulate the user navigating into "sub" to check progress and back
+	// out again — Refresh()/SetEntries wipes Selected entirely, same as
+	// real Enter()/Back() would.
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second push of the SAME directory name, before the first has
+	// finished: group2 replaces group1 in localPane.activeCopyGroups["sub"].
+	m.localPane.ToggleSelect()
+	cmd2 := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd2 == nil {
+		t.Fatal("expected a Cmd from the second enqueueCopyDirection")
+	}
+	cmd2()
+	drainEvents(m)
+
+	var job2 transfer.Job
+	select {
+	case job2 = <-m.jobsCh:
+	default:
+		t.Fatal("expected a job from the second push")
+	}
+
+	// The first push's (now stale) job finishes. It must NOT clear "sub"'s
+	// mark — that mark belongs to the second, still-in-flight push.
+	m.Update(transfer.TransferDoneMsg{ID: job1.ID})
+	if !m.localPane.Selected["sub"] {
+		t.Fatal("expected \"sub\" to remain marked: the stale first group must not clear the newer push's mark")
+	}
+
+	// The second push's job finishes: NOW it's correct to clear the mark.
+	m.Update(transfer.TransferDoneMsg{ID: job2.ID})
+	if m.localPane.Selected["sub"] {
+		t.Error("expected \"sub\"'s mark to clear once the still-current (second) group's file completed")
 	}
 }
