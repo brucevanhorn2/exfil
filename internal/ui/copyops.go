@@ -14,6 +14,7 @@ type transferQueuedMsg struct {
 	id       int
 	filename string
 	total    int64
+	srcPane  string
 	destPane string
 }
 
@@ -30,9 +31,9 @@ type transferQueueErrorMsg struct {
 // pool. Safe to call from any goroutine: it only sends on m.eventsCh/
 // m.jobsCh and calls the mutex-guarded allocateTransferID, never touching
 // m.queuePane/m.statusMsg/m.nextID directly.
-func (m *Model) enqueueFileCopy(srcFS, dstFS fsys.FileSystem, srcPath, dstPath, filename string, size int64, destPane string) {
+func (m *Model) enqueueFileCopy(srcFS, dstFS fsys.FileSystem, srcPath, dstPath, filename string, size int64, srcPane, destPane string) {
 	id := m.allocateTransferID()
-	m.eventsCh <- transferQueuedMsg{id: id, filename: filename, total: size, destPane: destPane}
+	m.eventsCh <- transferQueuedMsg{id: id, filename: filename, total: size, srcPane: srcPane, destPane: destPane}
 	m.jobsCh <- transfer.Job{
 		ID:         id,
 		SourcePath: srcPath,
@@ -68,7 +69,7 @@ func (m *Model) enqueueFileCopy(srcFS, dstFS fsys.FileSystem, srcPath, dstPath, 
 // shouldn't error) without hand-rolling that check against LocalFS/
 // RemoteFS's differently-shaped "already exists" errors — an accepted,
 // minor inefficiency for deep/wide trees rather than a correctness issue.
-func (m *Model) enqueueDirectoryCopy(srcFS, dstFS fsys.FileSystem, srcRoot, dstRoot, label, destPane string) int {
+func (m *Model) enqueueDirectoryCopy(srcFS, dstFS fsys.FileSystem, srcRoot, dstRoot, label, srcPane, destPane string) int {
 	if err := dstFS.MkdirAll(dstRoot); err != nil {
 		m.eventsCh <- transferQueueErrorMsg{label: label, err: err}
 		return 0
@@ -86,10 +87,10 @@ func (m *Model) enqueueDirectoryCopy(srcFS, dstFS fsys.FileSystem, srcRoot, dstR
 		dstPath := dstFS.Join(dstRoot, e.Name)
 		childLabel := label + "/" + e.Name
 		if e.IsDir {
-			count += m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, childLabel, destPane)
+			count += m.enqueueDirectoryCopy(srcFS, dstFS, srcPath, dstPath, childLabel, srcPane, destPane)
 			continue
 		}
-		m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, e.Name, e.Size, destPane)
+		m.enqueueFileCopy(srcFS, dstFS, srcPath, dstPath, e.Name, e.Size, srcPane, destPane)
 		count++
 	}
 	return count

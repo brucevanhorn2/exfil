@@ -131,6 +131,13 @@ func (b *BrowserPane) ToggleSelect() {
 	b.Selected[e.Name] = !b.Selected[e.Name]
 }
 
+// ClearSelected removes name from the pane's selection, if present. Used
+// once a marked file's transfer completes successfully, so its checkmark
+// disappears without disturbing other marks.
+func (b *BrowserPane) ClearSelected(name string) {
+	delete(b.Selected, name)
+}
+
 func (b *BrowserPane) GetSelectedFiles() []string {
 	var result []string
 	for name, selected := range b.Selected {

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"github.com/bvanhorn/exfil/internal/transfer"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+var errTestTransferFailed = errors.New("simulated transfer failure")
 
 func testLogger() *log.Logger {
 	return log.New(os.Stderr, "", 0)
@@ -28,6 +31,30 @@ func drainCmd(m *Model, cmd tea.Cmd) *Model {
 		msg := cmd()
 		var newModel tea.Model
 		newModel, cmd = m.Update(msg)
+		m = newModel.(*Model)
+	}
+	return m
+}
+
+// drainBatch runs a Cmd expected to produce a tea.BatchMsg (as
+// TransferDoneMsg's handler does), feeding each sub-command's result back
+// into m.Update. Used where a test only cares that the model ends up
+// consistent, not the exact readDirMsg plumbing (see
+// TestTransferDoneMsgRefreshesDestinationPane for that finer-grained check).
+func drainBatch(m *Model, cmd tea.Cmd) *Model {
+	if cmd == nil {
+		return m
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		var newModel tea.Model
+		newModel, _ = m.Update(msg)
+		return newModel.(*Model)
+	}
+	for _, sub := range batch {
+		var newModel tea.Model
+		newModel, _ = m.Update(sub())
 		m = newModel.(*Model)
 	}
 	return m
@@ -246,6 +273,136 @@ func TestTransferDoneMsgRefreshesDestinationPane(t *testing.T) {
 	}
 }
 
+// TestTransferDoneMsgClearsSourceSelection verifies that once a marked
+// file's transfer succeeds, its checkmark is cleared in the pane it was
+// copied *from* — but only that file; other marks are left untouched.
+func TestTransferDoneMsgClearsSourceSelection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// eventsCh needs room for both files' transferQueuedMsg (sent
+	// synchronously, back to back, by cmd() below) plus the "unblock" send
+	// further down — a buffer of 1 would deadlock on the second
+	// transferQueuedMsg send since nothing is draining concurrently here.
+	m := NewModel(make(chan tea.Msg, 4), make(chan transfer.Job, 2), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "other.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.remotePane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark both files, as if the user had multi-selected them before pushing.
+	m.localPane.Selected["file.txt"] = true
+	m.localPane.Selected["other.txt"] = true
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+
+	// Drain both transferQueuedMsg (one per file) through Update() so
+	// transferDest is actually populated — TransferDoneMsg's handler below
+	// looks up srcPane/filename there to decide what to clear.
+	if n := drainEvents(m); n != 2 {
+		t.Fatalf("expected 2 transferQueuedMsg (file.txt, other.txt), got %d", n)
+	}
+
+	var jobs []transfer.Job
+	for i := 0; i < 2; i++ {
+		select {
+		case job := <-m.jobsCh:
+			jobs = append(jobs, job)
+		default:
+			t.Fatalf("expected 2 queued jobs, got %d", i)
+		}
+	}
+
+	// Simulate only the job for file.txt completing; other.txt's transfer
+	// hasn't reported back yet.
+	var doneJob transfer.Job
+	for _, job := range jobs {
+		if job.Filename == "file.txt" {
+			doneJob = job
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(dstDir, "file.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	m.eventsCh <- nil // unblock waitForEvent so the returned batch is safe to run synchronously
+
+	_, batchCmd := m.Update(transfer.TransferDoneMsg{ID: doneJob.ID})
+	_ = drainBatch(m, batchCmd)
+
+	if m.localPane.Selected["file.txt"] {
+		t.Error("expected file.txt's mark to be cleared after its transfer succeeded")
+	}
+	if !m.localPane.Selected["other.txt"] {
+		t.Error("expected other.txt to remain marked; its transfer hasn't completed")
+	}
+}
+
+// TestTransferErrorMsgLeavesSourceSelectionMarked verifies that a failed
+// transfer does NOT clear the source file's mark, so the user can see what
+// failed and retry without re-marking it.
+func TestTransferErrorMsgLeavesSourceSelectionMarked(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	m := NewModel(make(chan tea.Msg, 1), make(chan transfer.Job, 1), testLogger(), true)
+	m.localPane.FS = fsys.LocalFS{}
+	m.localPane.Cwd = srcDir
+	m.remotePane.FS = fsys.LocalFS{}
+	m.remotePane.Cwd = dstDir
+
+	if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.localPane.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.localPane.Selected["file.txt"] = true
+
+	cmd := m.enqueueCopyDirection(m.localPane, m.remotePane)
+	if cmd == nil {
+		t.Fatal("expected a Cmd from enqueueCopyDirection")
+	}
+	cmd()
+
+	var job transfer.Job
+	select {
+	case job = <-m.jobsCh:
+	default:
+		t.Fatal("expected a job to be queued on jobsCh")
+	}
+
+	m.Update(transfer.TransferErrorMsg{ID: job.ID, Err: errTestTransferFailed})
+
+	if !m.localPane.Selected["file.txt"] {
+		t.Error("expected file.txt to remain marked after a failed transfer")
+	}
+}
+
 // TestEnqueueCopyDirectionBlocksDisconnectedRemote is a regression test for
 // a bug where the remote pane defaulted to browsing the local filesystem
 // before any SSH connection was made — confusing when the local and remote
@@ -344,7 +501,7 @@ func TestTransferDestConcurrentAccess(t *testing.T) {
 		id := i
 		go func() {
 			defer wg.Done()
-			m.setTransferDest(id, "remote")
+			m.setTransferDest(id, "remote", "local", "file.txt")
 		}()
 		go func() {
 			defer wg.Done()
